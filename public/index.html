@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Resume ATS Analyzer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Resume Analyzer</p>
+        <h1>ATS-style Job Match + AI Resume Optimization</h1>
+        <p class="subtle">
+          Paste a job description and your resume text (or upload a file). The app scores alignment and suggests changes.
+        </p>
+      </section>
+
+      <section class="panel form-panel">
+        <form id="analyzer-form">
+          <div class="field">
+            <label for="jobDescription">Job Description</label>
+            <textarea id="jobDescription" name="jobDescription" placeholder="Paste the job description here..." required></textarea>
+          </div>
+
+          <div class="grid two">
+            <div class="field">
+              <label for="resumeText">Resume Text</label>
+              <textarea id="resumeText" name="resumeText" placeholder="Paste resume text here (or upload a file below)..."></textarea>
+            </div>
+
+            <div class="field">
+              <label for="resumeFile">Resume File (optional)</label>
+              <input id="resumeFile" name="resumeFile" type="file" accept=".txt,.docx,.pdf" />
+              <p class="hint">Supported: TXT, DOCX, PDF (PDF parsing depends on local Node compatibility).</p>
+
+              <div class="tips-card">
+                <h3>How to improve score</h3>
+                <ul>
+                  <li>Mirror exact skills/keywords from the JD (truthfully).</li>
+                  <li>Use ATS-friendly headings: Summary, Skills, Experience, Education.</li>
+                  <li>Write quantified bullet points with impact metrics.</li>
+                  <li>Avoid tables/graphics/icons in the resume source.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="submit" id="analyzeBtn">Analyze Match</button>
+            <button type="button" id="optimizeBtn" class="secondary">Analyze + Optimize (Preserve Format)</button>
+          </div>
+          <p id="statusText" class="status"></p>
+        </form>
+      </section>
+
+      <section class="panel results-panel" id="resultsPanel" hidden>
+        <div class="score-strip">
+          <div class="score-card">
+            <p class="score-label">Simulated ATS Match</p>
+            <p class="score-value"><span id="scoreValue">0</span><span class="percent">/100</span></p>
+            <p class="score-band" id="scoreBand">-</p>
+          </div>
+          <div class="score-meta">
+            <p id="disclaimerText" class="disclaimer"></p>
+            <div id="breakdown" class="breakdown"></div>
+          </div>
+        </div>
+
+        <div class="grid two results-grid">
+          <div class="result-card">
+            <h3>Missing Keywords</h3>
+            <div id="missingKeywords" class="chips"></div>
+          </div>
+          <div class="result-card">
+            <h3>Matched Keywords</h3>
+            <div id="matchedKeywords" class="chips"></div>
+          </div>
+        </div>
+
+        <div class="grid two results-grid">
+          <div class="result-card">
+            <h3>Action Plan</h3>
+            <ul id="suggestionsList" class="list"></ul>
+          </div>
+          <div class="result-card">
+            <h3>ATS/Formatting Notes</h3>
+            <ul id="formatNotes" class="list"></ul>
+          </div>
+        </div>
+
+        <div class="result-card" id="optimizedCard" hidden>
+          <div class="card-head">
+            <h3>Optimized Resume Draft</h3>
+            <button type="button" id="copyOptimizedBtn" class="secondary small">Copy</button>
+          </div>
+          <p id="optimizationMode" class="hint"></p>
+          <p class="hint">This mode preserves the resume text structure (headings/order/line layout) and rewrites only eligible bullets/summary/skills lines.</p>
+          <ul id="optimizationNotes" class="list compact"></ul>
+          <textarea id="optimizedResumeOutput" readonly></textarea>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>
