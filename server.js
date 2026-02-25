@@ -4,7 +4,6 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
@@ -92,6 +91,21 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription }) {
 
   await runFormatScript(["apply", "--input", inputPath, "--mapping", mappingPath, "--edits", editsPath, "--output", outputPath]);
 
+  const afterMappingPath = path.join(workDir, "after_mapping.json");
+  await runFormatScript(["extract", "--input", outputPath, "--output", afterMappingPath]);
+  const afterMappingPayload = JSON.parse(fs.readFileSync(afterMappingPath, "utf8"));
+  const afterResumeText = (afterMappingPayload.text || optimization.optimizedResumeDraft || "").trim();
+  const afterAnalysis = analyzeResumeAgainstJob({
+    jobDescription,
+    resumeText: afterResumeText,
+    metadata: {
+      fileName: outputName,
+      source: `${afterMappingPayload.kind || mappingPayload.kind || "file"}-structured-optimized`,
+      formatPreservingFileFlow: true,
+      optimized: true,
+    },
+  });
+
   const downloadId = crypto.randomUUID();
   downloadStore.set(downloadId, {
     filePath: outputPath,
@@ -106,6 +120,10 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription }) {
 
   return {
     analysis,
+    beforeAnalysis: analysis,
+    afterAnalysis,
+    comparison: buildScoreComparison(analysis, afterAnalysis),
+    changePreview: buildKeywordAdditionPreview(analysis, optimization),
     optimization,
     output: {
       downloadId,
@@ -113,6 +131,70 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription }) {
       format: ext.slice(1),
       downloadUrl: `/api/download/${downloadId}`,
     },
+  };
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function keywordInText(text, keyword) {
+  if (!text || !keyword) return false;
+  const pattern = new RegExp(`\\b${escapeRegex(keyword).replace(/\\ /g, "\\s+")}\\b`, "i");
+  return pattern.test(text);
+}
+
+function buildKeywordAdditionPreview(beforeAnalysis, optimization) {
+  const missingKeywords = beforeAnalysis?.insights?.topMissingKeywords || [];
+  const edits = optimization?.appliedEdits || [];
+  const preview = [];
+
+  for (const edit of edits) {
+    const before = edit.before || "";
+    const after = edit.after || "";
+    const addedKeywords = missingKeywords.filter((keyword) => keywordInText(after, keyword) && !keywordInText(before, keyword));
+    if (!addedKeywords.length) continue;
+    preview.push({
+      lineNumber: edit.lineNumber,
+      type: edit.type,
+      reason: edit.reason || "",
+      addedKeywords,
+      before,
+      after,
+    });
+  }
+
+  return preview.slice(0, 20);
+}
+
+function buildScoreComparison(beforeAnalysis, afterAnalysis) {
+  const beforeScore = beforeAnalysis?.score ?? 0;
+  const afterScore = afterAnalysis?.score ?? 0;
+  return {
+    beforeScore,
+    afterScore,
+    delta: afterScore - beforeScore,
+    improved: afterScore > beforeScore,
+  };
+}
+
+function registerTextDownload({ text, extension = "txt", baseName = "optimized_resume" }) {
+  const id = crypto.randomUUID();
+  const fileName = `${baseName}.${extension}`;
+  const filePath = path.join(GENERATED_DIR, `${id}_${fileName}`);
+  fs.writeFileSync(filePath, text, "utf8");
+  downloadStore.set(id, {
+    filePath,
+    fileName,
+    mimeType: "text/plain; charset=utf-8",
+    createdAt: Date.now(),
+    originalName: fileName,
+  });
+  return {
+    downloadId: id,
+    fileName,
+    format: extension,
+    downloadUrl: `/api/download/${id}`,
   };
 }
 
@@ -182,9 +264,26 @@ app.post("/api/optimize", upload.single("resumeFile"), async (req, res) => {
       analysis,
     });
 
+    const afterAnalysis = analyzeResumeAgainstJob({
+      jobDescription,
+      resumeText: optimization.optimizedResumeDraft || resumeText,
+      metadata: { source: "optimized-text", optimized: true },
+    });
+
+    const output = registerTextDownload({
+      text: optimization.optimizedResumeDraft || resumeText,
+      extension: "txt",
+      baseName: "optimized_resume",
+    });
+
     res.json({
       analysis,
+      beforeAnalysis: analysis,
+      afterAnalysis,
+      comparison: buildScoreComparison(analysis, afterAnalysis),
+      changePreview: buildKeywordAdditionPreview(analysis, optimization),
       optimization,
+      output,
       aiEnabled: Boolean(process.env.OPENAI_API_KEY),
     });
   } catch (error) {

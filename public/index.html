@@ -19,13 +19,19 @@
       <section class="panel form-panel">
         <form id="analyzer-form">
           <div class="field">
-            <label for="jobDescription">Job Description</label>
+            <div class="field-head">
+              <label for="jobDescription">Job Description</label>
+              <button type="button" id="clearJobBtn" class="secondary small">Clear</button>
+            </div>
             <textarea id="jobDescription" name="jobDescription" placeholder="Paste the job description here..." required></textarea>
           </div>
 
           <div class="grid two">
             <div class="field">
-              <label for="resumeText">Resume Text</label>
+              <div class="field-head">
+                <label for="resumeText">Resume Text</label>
+                <button type="button" id="clearResumeBtn" class="secondary small">Clear</button>
+              </div>
               <textarea id="resumeText" name="resumeText" placeholder="Paste resume text here (or upload a file below)..."></textarea>
             </div>
 
@@ -48,8 +54,23 @@
 
           <div class="actions">
             <button type="submit" id="analyzeBtn">Analyze Match</button>
-            <button type="button" id="optimizeBtn" class="secondary">Analyze + Optimize (Preserve Format)</button>
-            <button type="button" id="optimizeFileBtn" class="secondary">Optimize + Download Updated DOCX/PDF</button>
+            <button type="button" id="optimizeAllBtn" class="secondary">Analyze + Optimize + Download</button>
+          </div>
+          <div id="loaderCard" class="loader-card" hidden>
+            <div class="loader-top">
+              <div class="spinner-orb" aria-hidden="true"></div>
+              <div>
+                <p id="loaderTitle" class="loader-title">Working on your resume...</p>
+                <p id="loaderSubtitle" class="hint">Analyzing keywords and preparing suggestions.</p>
+              </div>
+            </div>
+            <div class="progress-track" aria-hidden="true">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="progressPercent">0%</span>
+              <span id="progressStep">Queued</span>
+            </div>
           </div>
           <p id="statusText" class="status"></p>
         </form>
@@ -65,6 +86,30 @@
           <div class="score-meta">
             <p id="disclaimerText" class="disclaimer"></p>
             <div id="breakdown" class="breakdown"></div>
+          </div>
+        </div>
+
+        <div class="grid two results-grid" id="scoreCompareGrid" hidden>
+          <div class="result-card">
+            <h3>ATS Score: Before vs After</h3>
+            <div class="score-compare">
+              <div class="mini-score">
+                <span>Before</span>
+                <strong id="beforeScoreValue">0</strong>
+              </div>
+              <div class="mini-score">
+                <span>After</span>
+                <strong id="afterScoreValue">0</strong>
+              </div>
+              <div class="mini-score delta">
+                <span>Delta</span>
+                <strong id="deltaScoreValue">+0</strong>
+              </div>
+            </div>
+          </div>
+          <div class="result-card">
+            <h3>Keyword Adds Preview</h3>
+            <ul id="keywordAddPreview" class="list compact"></ul>
           </div>
         </div>
 
@@ -105,6 +150,11 @@
           <h3>Optimized File Download</h3>
           <p class="hint" id="downloadHint">Format-preserving file output will appear here.</p>
           <a id="downloadLink" class="download-link" href="#" download hidden>Download Updated File</a>
+        </div>
+
+        <div class="result-card" id="changesCard" hidden>
+          <h3>Changed Lines Preview</h3>
+          <div id="changesPreview" class="changes-preview"></div>
         </div>
       </section>
     </main>

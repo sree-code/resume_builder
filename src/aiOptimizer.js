@@ -293,6 +293,8 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
       lineNumber: e.lineNumber,
       type: e.type,
       reason: e.reason,
+      before: e.before,
+      after: e.after,
     })),
   };
 }
