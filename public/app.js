@@ -1,10 +1,14 @@
 const form = document.getElementById("analyzer-form");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const optimizeBtn = document.getElementById("optimizeBtn");
+const optimizeFileBtn = document.getElementById("optimizeFileBtn");
 const statusText = document.getElementById("statusText");
 const resultsPanel = document.getElementById("resultsPanel");
 const optimizedCard = document.getElementById("optimizedCard");
 const copyOptimizedBtn = document.getElementById("copyOptimizedBtn");
+const downloadCard = document.getElementById("downloadCard");
+const downloadLink = document.getElementById("downloadLink");
+const downloadHint = document.getElementById("downloadHint");
 
 function setStatus(message, type = "info") {
   statusText.textContent = message || "";
@@ -14,6 +18,7 @@ function setStatus(message, type = "info") {
 function setBusy(isBusy) {
   analyzeBtn.disabled = isBusy;
   optimizeBtn.disabled = isBusy;
+  optimizeFileBtn.disabled = isBusy;
 }
 
 function renderChips(containerId, items, emptyText) {
@@ -91,11 +96,38 @@ function renderOptimization(optimization) {
   document.getElementById("optimizedResumeOutput").value = optimization.optimizedResumeDraft || "";
 }
 
+function renderDownloadOutput(output) {
+  if (!output || !output.downloadUrl) {
+    downloadCard.hidden = true;
+    downloadLink.hidden = true;
+    return;
+  }
+  downloadCard.hidden = false;
+  downloadLink.hidden = false;
+  downloadLink.href = output.downloadUrl;
+  downloadLink.download = output.fileName || "optimized_resume";
+  downloadLink.textContent = `Download ${output.fileName || "Updated File"}`;
+  downloadHint.textContent = `Generated ${String(output.format || "").toUpperCase()} file with format-preserving updates.`;
+}
+
 async function submitAnalysis(mode = "analyze") {
   const formData = new FormData(form);
-  const endpoint = mode === "optimize" ? "/api/optimize" : "/api/analyze";
+  const endpoint =
+    mode === "optimizeFile" ? "/api/optimize-file" :
+    mode === "optimize" ? "/api/optimize" :
+    "/api/analyze";
+  if (mode === "optimizeFile" && !document.getElementById("resumeFile").files.length) {
+    setStatus("Please upload a DOCX or PDF file to use file-preserving optimization.", "error");
+    return;
+  }
   setBusy(true);
-  setStatus(mode === "optimize" ? "Analyzing + generating optimized draft..." : "Analyzing resume match...");
+  setStatus(
+    mode === "optimizeFile"
+      ? "Analyzing + optimizing uploaded file and preparing download..."
+      : mode === "optimize"
+        ? "Analyzing + generating optimized draft..."
+        : "Analyzing resume match..."
+  );
 
   try {
     const response = await fetch(endpoint, {
@@ -110,9 +142,11 @@ async function submitAnalysis(mode = "analyze") {
 
     renderAnalysis(data.analysis);
     renderOptimization(data.optimization);
+    renderDownloadOutput(data.output);
 
     if (mode === "analyze") {
       optimizedCard.hidden = true;
+      downloadCard.hidden = true;
     }
 
     const aiText = data.aiEnabled ? "AI optimization is enabled." : "AI optimization is not configured (set OPENAI_API_KEY).";
@@ -131,6 +165,10 @@ form.addEventListener("submit", (event) => {
 
 optimizeBtn.addEventListener("click", () => {
   submitAnalysis("optimize");
+});
+
+optimizeFileBtn.addEventListener("click", () => {
+  submitAnalysis("optimizeFile");
 });
 
 copyOptimizedBtn.addEventListener("click", async () => {

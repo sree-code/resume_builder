@@ -145,6 +145,7 @@ function buildFallbackOptimization({ analysis, resumeText }) {
   return {
     mode: "heuristic",
     preserveFormat: true,
+    lineEdits: [],
     notes: [
       "Format-preserving mode is enabled. No OpenAI API key detected, so the resume text is left unchanged.",
       "Only bullet/summary/skills lines are eligible for editing when AI is enabled; headings and line order are preserved.",
@@ -173,6 +174,7 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     return {
       mode: "heuristic",
       preserveFormat: true,
+      lineEdits: [],
       notes: [
         "Format-preserving mode is enabled, but no editable bullet/summary/skills lines were detected.",
         "Add bullet points or a skills/summary section to enable targeted AI rewrites without changing the format.",
@@ -259,6 +261,7 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     return {
       mode: "ai",
       preserveFormat: true,
+      lineEdits: [],
       notes: ["AI response returned non-JSON output. Returning original resume to preserve format."],
       optimizedResumeDraft: resumeText,
       rawResponse: raw,
@@ -270,6 +273,12 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
   return {
     mode: "ai",
     preserveFormat: true,
+    lineEdits: appliedEdits.map((e) => ({
+      lineNumber: e.lineNumber,
+      newText: e.after,
+      type: e.type,
+      reason: e.reason,
+    })),
     notes: [
       "Format-preserving mode: only selected bullet/summary/skills lines were updated; headings/order/layout text structure was kept.",
       ...(analysis?.metadata?.source && analysis.metadata.source !== "textarea"

@@ -49,6 +49,7 @@
           <div class="actions">
             <button type="submit" id="analyzeBtn">Analyze Match</button>
             <button type="button" id="optimizeBtn" class="secondary">Analyze + Optimize (Preserve Format)</button>
+            <button type="button" id="optimizeFileBtn" class="secondary">Optimize + Download Updated DOCX/PDF</button>
           </div>
           <p id="statusText" class="status"></p>
         </form>
@@ -98,6 +99,12 @@
           <p class="hint">This mode preserves the resume text structure (headings/order/line layout) and rewrites only eligible bullets/summary/skills lines.</p>
           <ul id="optimizationNotes" class="list compact"></ul>
           <textarea id="optimizedResumeOutput" readonly></textarea>
+        </div>
+
+        <div class="result-card" id="downloadCard" hidden>
+          <h3>Optimized File Download</h3>
+          <p class="hint" id="downloadHint">Format-preserving file output will appear here.</p>
+          <a id="downloadLink" class="download-link" href="#" download hidden>Download Updated File</a>
         </div>
       </section>
     </main>
