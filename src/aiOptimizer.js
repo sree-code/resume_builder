@@ -16,6 +16,8 @@ const HEADER_ALIASES = new Map([
   ["work experience", "experience"],
   ["professional experience", "experience"],
   ["employment", "experience"],
+  ["achievements", "achievements"],
+  ["notable achievements", "achievements"],
   ["projects", "projects"],
   ["education", "education"],
 ]);
@@ -44,7 +46,10 @@ function buildEditableLineCandidates(resumeText) {
   let currentSection = null;
   let summaryCount = 0;
   let skillsCount = 0;
-  let bulletCount = 0;
+  let experienceBulletCount = 0;
+  let achievementBulletCount = 0;
+  let otherBulletCount = 0;
+  let sectionBodyCount = 0;
 
   lines.forEach((line, index) => {
     const raw = line;
@@ -54,23 +59,42 @@ function buildEditableLineCandidates(resumeText) {
     const section = detectSection(trimmed);
     if (section) {
       currentSection = section;
+      sectionBodyCount = 0;
       return;
     }
 
     if (isBulletLine(raw)) {
-      if (bulletCount < 30) {
+      const bulletSection =
+        currentSection === "experience" ? "experience" :
+        /achievement/i.test(currentSection || "") ? "achievements" :
+        currentSection || "unknown";
+
+      const isExperienceLike = bulletSection === "experience" || bulletSection === "projects";
+      const isAchievementLike = bulletSection === "achievements";
+      const canAdd =
+        (isExperienceLike && experienceBulletCount < 45) ||
+        (isAchievementLike && achievementBulletCount < 20) ||
+        (!isExperienceLike && !isAchievementLike && otherBulletCount < 20);
+
+      if (canAdd) {
+        const type =
+          bulletSection === "experience" ? "experience_bullet" :
+          bulletSection === "achievements" ? "achievement_bullet" :
+          "bullet";
         candidates.push({
           lineNumber: index + 1,
-          type: "bullet",
-          section: currentSection || "unknown",
+          type,
+          section: bulletSection,
           originalText: raw,
         });
-        bulletCount += 1;
+        if (isExperienceLike) experienceBulletCount += 1;
+        else if (isAchievementLike) achievementBulletCount += 1;
+        else otherBulletCount += 1;
       }
       return;
     }
 
-    if (currentSection === "summary" && summaryCount < 4) {
+    if (currentSection === "summary" && summaryCount < 6) {
       candidates.push({
         lineNumber: index + 1,
         type: "summary_line",
@@ -78,10 +102,11 @@ function buildEditableLineCandidates(resumeText) {
         originalText: raw,
       });
       summaryCount += 1;
+      sectionBodyCount += 1;
       return;
     }
 
-    if (currentSection === "skills" && skillsCount < 10) {
+    if (currentSection === "skills" && skillsCount < 14) {
       candidates.push({
         lineNumber: index + 1,
         type: "skills_line",
@@ -89,6 +114,19 @@ function buildEditableLineCandidates(resumeText) {
         originalText: raw,
       });
       skillsCount += 1;
+      sectionBodyCount += 1;
+      return;
+    }
+
+    // Allow limited non-bullet experience lines (project labels / overview lines) to be refined.
+    if (currentSection === "experience" && sectionBodyCount < 10 && trimmed.length >= 12) {
+      candidates.push({
+        lineNumber: index + 1,
+        type: "experience_line",
+        section: currentSection,
+        originalText: raw,
+      });
+      sectionBodyCount += 1;
     }
   });
 
@@ -115,13 +153,26 @@ function applyLineEditsPreservingLayout(lines, candidates, edits) {
       const prefix = prefixMatch ? prefixMatch[1] : "- ";
       newText = newText.replace(/^\s*[-*•]\s+/, "");
       newText = prefix + newText.trim();
+    } else if (candidate.type === "experience_bullet" || candidate.type === "achievement_bullet") {
+      const prefixMatch = candidate.originalText.match(/^(\s*[-*•]\s+)/);
+      const prefix = prefixMatch ? prefixMatch[1] : "- ";
+      newText = newText.replace(/^\s*[-*•]\s+/, "");
+      newText = prefix + newText.trim();
     } else {
       const indent = extractLeadingWhitespace(candidate.originalText);
       newText = indent + newText.trim();
     }
 
-    // Prevent overly long single-line rewrites that will likely damage readability.
-    if (newText.length > 260) continue;
+    // Prevent extreme rewrites while allowing long summary/experience lines present in real resumes.
+    const maxLen =
+      candidate.type === "summary_line" ? 520 :
+      candidate.type === "experience_line" ? 420 :
+      candidate.type === "experience_bullet" ? 360 :
+      candidate.type === "achievement_bullet" ? 340 :
+      candidate.type === "skills_line" ? 320 :
+      300;
+    if (newText.length > maxLen) continue;
+    if (newText === candidate.originalText) continue;
 
     updated[edit.lineNumber - 1] = newText;
     seen.add(edit.lineNumber);
@@ -187,6 +238,13 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     lineNumber: c.lineNumber,
     type: c.type,
     section: c.section,
+    priority:
+      c.type === "summary_line" ? "high" :
+      c.type === "experience_bullet" ? "high" :
+      c.type === "experience_line" ? "medium" :
+      c.type === "achievement_bullet" ? "medium" :
+      c.type === "skills_line" ? "medium" :
+      "low",
     text: c.originalText,
   }));
 
@@ -195,15 +253,21 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     "IMPORTANT: Preserve the resume format and structure exactly.",
     "You may ONLY rewrite the provided editable lines. Do not add/remove/reorder lines, sections, or headings.",
     "This is a line-preserving optimization task: same line count, same order, same headings, same non-editable text.",
+    "Prioritize meaningful ATS improvements in PROFESSIONAL SUMMARY and EXPERIENCE bullets before editing skills lines.",
     "Rules:",
     "- Do not invent employers, degrees, dates, certifications, or achievements.",
     "- Only improve wording, keyword alignment, and bullet impact in provided lines.",
     "- Preserve bullet prefixes (`-`, `*`, `•`) and avoid multi-line outputs.",
     "- Include job-description keywords only when they can be reasonably supported by the existing resume.",
     "- Keep each rewritten line concise and readable.",
+    "- Edit summary and experience lines aggressively enough to improve ATS score; do not spend all edits on skill lists.",
+    "- If the JD lists alternative languages (e.g., Java, Go, C#), do not fabricate experience with all of them. Strengthen evidence of the strongest truthful OO language and architecture/service experience.",
+    "- You may add generic senior-engineering leadership phrasing (technical leadership, architecture, problem-solving, distributed services, production support) only if it plausibly matches the existing experience.",
     "- Return JSON with keys: edits (array), changes (array of strings), cautionNotes (array of strings).",
     "- Each item in edits must have: lineNumber (number), newText (string), reason (string).",
     "- Only include lineNumber values from the editable lines list.",
+    "- Prefer 10-20 edits when enough eligible lines exist.",
+    "- Include at least 2 summary_line edits and at least 5 experience_bullet/experience_line edits if such lines are available.",
     "",
     `Current simulated match score: ${analysis?.score ?? "n/a"}/100`,
     `Missing keywords to consider: ${missingKeywords.join(", ") || "none"}`,
@@ -218,45 +282,50 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     "Full resume text for context (non-editable lines must remain unchanged):",
     resumeText,
   ].join("\n");
-
-  const response = await client.responses.create({
-    model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-    input: prompt,
-    max_output_tokens: 2600,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "resume_optimization",
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            edits: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  lineNumber: { type: "integer" },
-                  newText: { type: "string" },
-                  reason: { type: "string" },
-                },
-                required: ["lineNumber", "newText", "reason"],
+  const responseFormat = {
+    format: {
+      type: "json_schema",
+      name: "resume_optimization",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          edits: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                lineNumber: { type: "integer" },
+                newText: { type: "string" },
+                reason: { type: "string" },
               },
+              required: ["lineNumber", "newText", "reason"],
             },
-            changes: { type: "array", items: { type: "string" } },
-            cautionNotes: { type: "array", items: { type: "string" } },
           },
-          required: ["edits", "changes", "cautionNotes"],
+          changes: { type: "array", items: { type: "string" } },
+          cautionNotes: { type: "array", items: { type: "string" } },
         },
+        required: ["edits", "changes", "cautionNotes"],
       },
     },
-  });
+  };
 
-  const raw = response.output_text;
+  async function requestParsed(promptText) {
+    const response = await client.responses.create({
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      input: promptText,
+      max_output_tokens: 2600,
+      text: responseFormat,
+    });
+    const raw = response.output_text;
+    return { raw, parsed: JSON.parse(raw) };
+  }
+
   let parsed;
+  let raw;
   try {
-    parsed = JSON.parse(raw);
+    ({ raw, parsed } = await requestParsed(prompt));
   } catch (_err) {
     return {
       mode: "ai",
@@ -264,11 +333,54 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
       lineEdits: [],
       notes: ["AI response returned non-JSON output. Returning original resume to preserve format."],
       optimizedResumeDraft: resumeText,
-      rawResponse: raw,
+      rawResponse: typeof raw === "string" ? raw : "",
     };
   }
 
-  const { optimizedResumeDraft, appliedEdits } = applyLineEditsPreservingLayout(lines, candidates, parsed.edits || []);
+  let { optimizedResumeDraft, appliedEdits } = applyLineEditsPreservingLayout(lines, candidates, parsed.edits || []);
+
+  const summaryCandidates = candidates.filter((c) => c.type === "summary_line");
+  const experienceCandidates = candidates.filter((c) => c.type === "experience_bullet" || c.type === "experience_line");
+  const summaryEdits = appliedEdits.filter((e) => e.type === "summary_line").length;
+  const experienceEdits = appliedEdits.filter((e) => e.type === "experience_bullet" || e.type === "experience_line").length;
+  const summaryTarget = Math.min(2, summaryCandidates.length);
+  const experienceTarget = Math.min(5, experienceCandidates.length);
+
+  const needsRetry =
+    (summaryTarget > 0 && summaryEdits < summaryTarget) ||
+    (experienceTarget > 0 && experienceEdits < Math.min(3, experienceTarget));
+
+  if (needsRetry) {
+    const retryPrompt = [
+      prompt,
+      "",
+      "RETRY INSTRUCTIONS (you under-edited key sections in the previous attempt):",
+      `- Must include summary edits on these lineNumbers when available: ${summaryCandidates.slice(0, 4).map((c) => c.lineNumber).join(", ") || "none"}`,
+      `- Must include experience edits on these lineNumbers when available: ${experienceCandidates.slice(0, 12).map((c) => c.lineNumber).join(", ") || "none"}`,
+      "- Do not return no-op edits.",
+      "- Prioritize summary + experience changes first, then skills.",
+    ].join("\n");
+
+    try {
+      const retry = await requestParsed(retryPrompt);
+      const retryApplied = applyLineEditsPreservingLayout(lines, candidates, retry.parsed.edits || []);
+      const retrySummaryEdits = retryApplied.appliedEdits.filter((e) => e.type === "summary_line").length;
+      const retryExperienceEdits = retryApplied.appliedEdits.filter((e) => e.type === "experience_bullet" || e.type === "experience_line").length;
+      const retryIsBetter =
+        retrySummaryEdits > summaryEdits ||
+        (retrySummaryEdits === summaryEdits && retryExperienceEdits > experienceEdits) ||
+        (retrySummaryEdits === summaryEdits && retryExperienceEdits === experienceEdits && retryApplied.appliedEdits.length > appliedEdits.length);
+
+      if (retryIsBetter) {
+        parsed = retry.parsed;
+        raw = retry.raw;
+        optimizedResumeDraft = retryApplied.optimizedResumeDraft;
+        appliedEdits = retryApplied.appliedEdits;
+      }
+    } catch (_retryErr) {
+      // Keep the first valid structured result if retry fails.
+    }
+  }
 
   return {
     mode: "ai",

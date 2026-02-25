@@ -22,6 +22,51 @@ const SECTION_HEADERS = [
 ];
 
 const ROLE_WORDS = ["engineer", "developer", "analyst", "manager", "architect", "scientist", "designer", "consultant"];
+const LOW_SIGNAL_KEYWORDS = new Set([
+  "one area",
+  "technical field involving",
+  "developers. specify",
+  "developers specify",
+  "meet future business",
+]);
+const LOW_SIGNAL_SINGLE_TOKENS = new Set([
+  "software", "engineer", "developers", "developer", "division", "provide", "demonstrated",
+  "write", "great", "existing", "technical", "field", "involving", "future", "one", "area",
+  "market", "features", "meet", "business", "preferably", "similar", "highly", "public", "big", "systematic",
+  "market-leading",
+]);
+
+const KEYWORD_ALIASES = new Map([
+  ["go", ["go", "golang"]],
+  ["golang", ["go", "golang"]],
+  ["c#", ["c#", "csharp", ".net", "dotnet", "asp.net"]],
+  ["csharp", ["c#", "csharp", ".net", "dotnet", "asp.net"]],
+  ["ai", ["ai", "artificial intelligence", "machine learning", "llm", "nlp", "openai"]],
+  ["public cloud platform", ["aws", "azure", "gcp", "cloud platform", "public cloud"]],
+  ["preferably terraform", ["terraform", "infrastructure as code", "iac", "cloudformation"]],
+  ["big data technologies", ["big data", "kafka", "spark", "hadoop", "databricks", "data pipelines"]],
+  ["highly distributed services", ["microservices", "distributed systems", "distributed services", "scalable services"]],
+  ["tier-one livesite", ["production support", "live site", "livesite", "on-call", "incident response", "sev"]],
+  ["provide technical leadership", ["technical leadership", "led", "mentored", "guided engineering", "architected"]],
+  ["existing software architecture", ["software architecture", "system architecture", "architecture", "system design"]],
+  ["systematic problem-solving", ["problem solving", "root cause", "troubleshooting", "debugging"]],
+  ["problem-solving", ["problem solving", "root cause", "troubleshooting", "debugging"]],
+  ["market-leading features", ["customer-facing features", "flagship features", "platform features"]],
+  ["market-leading", ["customer-facing", "flagship", "platform"]],
+  ["meet future business", ["scalable", "scalability", "roadmap", "future growth"]],
+  ["engineering division", ["engineering org", "engineering organization", "engineering team"]],
+  ["technical leadership", ["technical leadership", "led", "mentored", "architected"]],
+  ["write great code", ["code quality", "software engineering", "clean code", "production code"]],
+  ["livesite", ["livesite", "production support", "on-call", "incident"]],
+  ["tier-one", ["tier one", "tier-one", "production", "sev"]],
+  ["senior software engineer", ["senior software engineer", "senior developer", "senior full stack developer", "lead full stack developer"]],
+  ["bs", ["b.s", "bs", "bachelor", "bachelors", "bachelor's", "bachelor of"]],
+  ["ms", ["m.s", "ms", "master", "masters", "master's", "master of"]],
+]);
+
+const LANGUAGE_ALTERNATIVE_GROUPS = [
+  ["java", "go", "golang", "c#", "csharp", "python", "c++"],
+];
 
 function normalizeText(text) {
   return (text || "")
@@ -37,6 +82,15 @@ function tokenize(text) {
     .replace(/[^a-z0-9+#./ -]/g, " ")
     .split(/\s+/)
     .filter(Boolean);
+}
+
+function normalizeKeyword(keyword) {
+  return String(keyword || "")
+    .toLowerCase()
+    .replace(/[()]/g, " ")
+    .replace(/[“”"']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function unique(arr) {
@@ -82,7 +136,8 @@ function extractPhrases(jobDescription) {
   const singleTokens = tokenize(text)
     .filter((t) => t.length >= 2 && !STOPWORDS.has(t))
     .filter((t) => /[a-z]/.test(t))
-    .filter((t) => !/[.,;:]$/.test(t));
+    .filter((t) => !/[.,;:]$/.test(t))
+    .filter((t) => !LOW_SIGNAL_SINGLE_TOKENS.has(normalizeKeyword(t)));
 
   const freq = new Map();
   for (const token of singleTokens) {
@@ -102,7 +157,15 @@ function extractPhrases(jobDescription) {
     .filter((p) => !STOPWORDS.has(p))
     .filter((p) => p !== "and" && p !== "or")
     .filter((p) => !/[.,;:]$/.test(p))
-    .filter((p) => !/\b(with|and|or|for|to)\b/.test(p) || COMMON_SKILLS.includes(p));
+    .filter((p) => !/[.;:]\s/.test(p) || COMMON_SKILLS.includes(p))
+    .filter((p) => !/\b(with|and|or|for|to)\b/.test(p) || COMMON_SKILLS.includes(p))
+    .filter((p) => !LOW_SIGNAL_KEYWORDS.has(normalizeKeyword(p)))
+    .filter((p) => !/^\w+\.$/.test(p))
+    .filter((p) => {
+      const tokens = p.split(/\s+/);
+      const generic = tokens.filter((t) => STOPWORDS.has(t) || ["existing", "future", "one", "area", "involving", "field", "division"].includes(t)).length;
+      return !(tokens.length >= 2 && generic >= tokens.length - 1);
+    });
 
   return unique(filtered);
 }
@@ -140,23 +203,63 @@ function splitSections(resumeText) {
 
 function scoreKeywordCoverage(jobKeywords, resumeText) {
   const lowerResume = resumeText.toLowerCase();
+  const normalizedResume = normalizeKeyword(resumeText);
+  const resumeTokens = new Set(tokenize(resumeText).map(normalizeKeyword));
+  const presentGroups = new Set();
+  for (const group of LANGUAGE_ALTERNATIVE_GROUPS) {
+    const hasAny = group.some((kw) => keywordMatchesResume(lowerResume, normalizedResume, resumeTokens, kw));
+    if (hasAny) group.forEach((kw) => presentGroups.add(normalizeKeyword(kw)));
+  }
+
   const keywordWeights = jobKeywords.map((keyword) => {
+    const normalized = normalizeKeyword(keyword);
     let weight = 1;
     if (COMMON_SKILLS.includes(keyword)) weight = 3;
     if (keyword.includes(" ") && keyword.split(" ").length >= 2) weight += 1;
-    if (/^(aws|gcp|azure|sql|api|react|node|python|java|docker|kubernetes)$/.test(keyword)) weight += 1;
-    return { keyword, weight };
+    if (/^(aws|gcp|azure|sql|api|react|node|python|java|docker|kubernetes|terraform)$/.test(normalized)) weight += 1;
+    if (LOW_SIGNAL_KEYWORDS.has(normalized)) weight = 0;
+    if (/\b(division|field|one area|developers specify)\b/.test(normalized)) weight = Math.min(weight, 1);
+    if (normalized.length <= 2 && !["ai", "go", "bs", "ms"].includes(normalized)) weight = 0;
+    return { keyword, normalized, weight };
   });
+
+  const groupWeightCaps = new Map();
+  for (const item of keywordWeights) {
+    if (item.weight <= 0) continue;
+    const groupKey = getAlternativeGroupKey(item.normalized);
+    if (!groupKey) continue;
+    groupWeightCaps.set(groupKey, Math.max(groupWeightCaps.get(groupKey) || 0, item.weight));
+  }
 
   const matched = [];
   const missing = [];
   let totalWeight = 0;
   let matchedWeight = 0;
+  const groupCounted = new Set();
+  const groupTotalAdded = new Set();
 
   for (const item of keywordWeights) {
-    totalWeight += item.weight;
-    const pattern = new RegExp(`\\b${escapeRegex(item.keyword).replace(/\\ /g, "\\s+")}\\b`, "i");
-    if (pattern.test(lowerResume)) {
+    if (item.weight <= 0) continue;
+    const groupKey = getAlternativeGroupKey(item.normalized);
+    if (groupKey) {
+      if (!groupTotalAdded.has(groupKey)) {
+        totalWeight += groupWeightCaps.get(groupKey) || item.weight;
+        groupTotalAdded.add(groupKey);
+      }
+    } else {
+      totalWeight += item.weight;
+    }
+
+    if (groupKey && presentGroups.has(item.normalized)) {
+      if (!groupCounted.has(groupKey)) {
+        matchedWeight += groupWeightCaps.get(groupKey) || item.weight;
+        groupCounted.add(groupKey);
+      }
+      matched.push(item);
+      continue;
+    }
+
+    if (keywordMatchesResume(lowerResume, normalizedResume, resumeTokens, item.keyword)) {
       matched.push(item);
       matchedWeight += item.weight;
     } else {
@@ -169,9 +272,56 @@ function scoreKeywordCoverage(jobKeywords, resumeText) {
   return {
     rawCoverage,
     score: Math.round(rawCoverage * 45),
-    matchedKeywords: matched.sort((a, b) => b.weight - a.weight).map((x) => x.keyword),
-    missingKeywords: missing.sort((a, b) => b.weight - a.weight).map((x) => x.keyword),
+    matchedKeywords: dedupeKeywordsForDisplay(matched.sort((a, b) => b.weight - a.weight).map((x) => x.keyword)),
+    missingKeywords: dedupeKeywordsForDisplay(missing.sort((a, b) => b.weight - a.weight).map((x) => x.keyword)),
   };
+}
+
+function dedupeKeywordsForDisplay(keywords) {
+  const out = [];
+  const seen = new Set();
+  for (const keyword of keywords) {
+    const normalized = normalizeKeyword(keyword);
+    if (!normalized || LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) continue;
+    const key = getAlternativeGroupKey(normalized) || normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(keyword);
+  }
+  return out;
+}
+
+function getAlternativeGroupKey(normalizedKeyword) {
+  for (const group of LANGUAGE_ALTERNATIVE_GROUPS) {
+    if (group.map(normalizeKeyword).includes(normalizedKeyword)) {
+      return group.map(normalizeKeyword).sort().join("|");
+    }
+  }
+  return null;
+}
+
+function keywordMatchesResume(lowerResume, normalizedResume, resumeTokens, keyword) {
+  const normalizedKeyword = normalizeKeyword(keyword);
+  if (!normalizedKeyword) return false;
+
+  const patterns = new Set([normalizedKeyword]);
+  const aliases = KEYWORD_ALIASES.get(normalizedKeyword) || [];
+  aliases.forEach((a) => patterns.add(normalizeKeyword(a)));
+
+  for (const patternValue of patterns) {
+    if (!patternValue) continue;
+
+    if (patternValue.includes(" ")) {
+      const pattern = new RegExp(`\\b${escapeRegex(patternValue).replace(/\\ /g, "\\s+")}\\b`, "i");
+      if (pattern.test(lowerResume) || pattern.test(normalizedResume)) return true;
+    } else {
+      if (resumeTokens.has(patternValue)) return true;
+      const pattern = new RegExp(`\\b${escapeRegex(patternValue)}\\b`, "i");
+      if (pattern.test(lowerResume) || pattern.test(normalizedResume)) return true;
+    }
+  }
+
+  return false;
 }
 
 function scoreSectionCompleteness(resumeText) {
