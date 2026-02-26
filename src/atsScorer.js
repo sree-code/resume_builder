@@ -28,6 +28,9 @@ const LOW_SIGNAL_KEYWORDS = new Set([
   "developers. specify",
   "developers specify",
   "meet future business",
+  "basic qualifications",
+  "qualifications",
+  "basic",
 ]);
 const LOW_SIGNAL_SINGLE_TOKENS = new Set([
   "software", "engineer", "developers", "developer", "division", "provide", "demonstrated",
@@ -38,6 +41,8 @@ const LOW_SIGNAL_SINGLE_TOKENS = new Set([
   "contribute", "acceptance", "necessary", "execute", "detect", "manual", "methodology", "passion",
   "orientated", "driving", "quality", "information", "systems", "system", "product", "products", "services",
   "technicals", "tools", "deliver", "multiple", "projects", "around",
+  "basic", "qualifications", "qualification", "deeply", "understand", "different", "such", "verbal",
+  "continuously", "innovate", "self-serving", "steps", "step", "compilation", "fix",
 ]);
 
 const KEYWORD_ALIASES = new Map([
@@ -71,6 +76,13 @@ const KEYWORD_ALIASES = new Map([
   ["senior software engineer", ["senior software engineer", "senior developer", "senior full stack developer", "lead full stack developer"]],
   ["bs", ["b.s", "bs", "bachelor", "bachelors", "bachelor's", "bachelor of"]],
   ["ms", ["m.s", "ms", "master", "masters", "master's", "master of"]],
+  ["reactjs", ["reactjs", "react.js", "react"]],
+  ["cicd", ["cicd", "ci/cd", "continuous integration", "continuous delivery", "deployment pipeline", "release pipeline"]],
+  ["infra", ["infra", "infrastructure", "platform infrastructure"]],
+  ["manangers", ["manangers", "managers", "engineering managers"]],
+  ["mobile release processes", ["mobile release processes", "release process", "release management", "mobile releases"]],
+  ["release platform tools", ["release platform tools", "release tooling", "platform tools"]],
+  ["compilation steps", ["compilation steps", "build steps", "compile steps"]],
 ]);
 
 const LANGUAGE_ALTERNATIVE_GROUPS = [
@@ -193,6 +205,19 @@ function normalizeJobKeywords(keywords, jobDescription) {
   if (/\bprocesses?\b/.test(text) || /\bprocedures?\b/.test(text)) {
     items.push("engineering processes");
   }
+  if ((norms.has("mobile release processes") || norms.has("release platform tools") || norms.has("high quality release")) &&
+      (norms.has("ios") || norms.has("android") || norms.has("reactjs"))) {
+    items.push("mobile release engineering");
+  }
+  if (norms.has("cicd") || (norms.has("compilation steps") && (norms.has("deploying") || norms.has("infra")))) {
+    items.push("mobile ci/cd compilation and deployment");
+  }
+  if (norms.has("verbal communication skills") || norms.has("collaborate") || norms.has("manangers") || norms.has("managers")) {
+    items.push("cross-functional communication");
+  }
+  if (norms.has("engineering best practices") || norms.has("engineering processes") || norms.has("continuously") || norms.has("innovate") || norms.has("improvement")) {
+    items.push("engineering process improvement");
+  }
   if (/\bother software developers\b/.test(text) || /\bguide\b/.test(text) || /\bassist\b/.test(text)) {
     items.push("mentoring developers");
   }
@@ -205,6 +230,8 @@ function normalizeJobKeywords(keywords, jobDescription) {
     "architects", "guide", "processes", "procedures", "review", "written", "peers",
     "other software developers", "meet changing needs",
     "contribute", "acceptance", "necessary", "execute", "detect",
+    "basic", "qualifications", "basic qualifications", "deeply", "understand", "different", "such",
+    "verbal", "continuously", "innovate", "fix", "steps", "step", "compilation",
   ]);
 
   const out = [];
@@ -310,6 +337,8 @@ function scoreKeywordCoverage(jobKeywords, resumeText) {
     if (keyword.includes(" ") && keyword.split(" ").length >= 2) weight += 1;
     if (/^(aws|gcp|azure|sql|api|react|node|python|java|docker|kubernetes|terraform)$/.test(normalized)) weight += 1;
     if (LOW_SIGNAL_KEYWORDS.has(normalized)) weight = 0;
+    if (/^(basic qualifications|qualifications|basic)$/.test(normalized)) weight = 0;
+    if (/(^degree$|^masters?$|computer engineering|electrical engineering)/.test(normalized)) weight = Math.min(weight, 1);
     if (/\b(division|field|one area|developers specify)\b/.test(normalized)) weight = Math.min(weight, 1);
     if (normalized.length <= 2 && !["ai", "go", "bs", "ms"].includes(normalized)) weight = 0;
     return { keyword, normalized, weight };
