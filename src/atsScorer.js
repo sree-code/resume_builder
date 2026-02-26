@@ -59,6 +59,11 @@ const KEYWORD_ALIASES = new Map([
   ["write great code", ["code quality", "software engineering", "clean code", "production code"]],
   ["livesite", ["livesite", "production support", "on-call", "incident"]],
   ["tier-one", ["tier one", "tier-one", "production", "sev"]],
+  ["peer code review", ["code review", "peer review", "review code", "reviewed code", "pull request review"]],
+  ["cloud architecture", ["cloud architecture", "aws architecture", "solution architecture", "system architecture"]],
+  ["engineering processes", ["engineering processes", "development processes", "sdlc", "process improvements", "procedures"]],
+  ["mentoring developers", ["mentored developers", "guided developers", "mentored engineers", "technical leadership"]],
+  ["changing needs", ["changing needs", "evolving requirements", "changing business needs", "future needs"]],
   ["senior software engineer", ["senior software engineer", "senior developer", "senior full stack developer", "lead full stack developer"]],
   ["bs", ["b.s", "bs", "bachelor", "bachelors", "bachelor's", "bachelor of"]],
   ["ms", ["m.s", "ms", "master", "masters", "master's", "master of"]],
@@ -168,6 +173,48 @@ function extractPhrases(jobDescription) {
     });
 
   return unique(filtered);
+}
+
+function normalizeJobKeywords(keywords, jobDescription) {
+  const text = normalizeKeyword(jobDescription);
+  const norms = new Set(keywords.map((k) => normalizeKeyword(k)));
+  const items = [...keywords];
+
+  if (/\breview code\b/.test(text) || (norms.has("review") && (norms.has("written") || norms.has("peers")))) {
+    items.push("peer code review");
+  }
+  if (/\bcloud architecture\b/.test(text) || (norms.has("cloud") && norms.has("architecture"))) {
+    items.push("cloud architecture");
+  }
+  if (/\bprocesses?\b/.test(text) || /\bprocedures?\b/.test(text)) {
+    items.push("engineering processes");
+  }
+  if (/\bother software developers\b/.test(text) || /\bguide\b/.test(text) || /\bassist\b/.test(text)) {
+    items.push("mentoring developers");
+  }
+  if (/\bchanging needs\b/.test(text) || /\bmeet changing needs\b/.test(text)) {
+    items.push("changing needs");
+  }
+
+  const removeNoisy = new Set([
+    "other", "specify", "changing", "includes", "define", "implement", "member", "assist",
+    "architects", "guide", "processes", "procedures", "review", "written", "peers",
+    "other software developers", "meet changing needs",
+  ]);
+
+  const out = [];
+  const seen = new Set();
+  for (const keyword of items) {
+    const normalized = normalizeKeyword(keyword);
+    if (!normalized) continue;
+    if (removeNoisy.has(normalized)) continue;
+    if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) continue;
+    const key = getAlternativeGroupKey(normalized) || normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(keyword);
+  }
+  return out;
 }
 
 function extractLikelyJobTitles(jobDescription) {
@@ -517,7 +564,7 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) 
   const normalizedJD = normalizeText(jobDescription);
   const normalizedResume = normalizeText(resumeText);
 
-  const jdKeywords = extractPhrases(normalizedJD);
+  const jdKeywords = normalizeJobKeywords(extractPhrases(normalizedJD), normalizedJD);
   const jobTitles = extractLikelyJobTitles(normalizedJD);
 
   const keywordCoverage = scoreKeywordCoverage(jdKeywords, normalizedResume);
