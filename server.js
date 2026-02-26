@@ -56,10 +56,30 @@ function ensureSupportedFormat(file) {
 
 async function runFormatScript(args) {
   const scriptPath = path.join(__dirname, "scripts", "format_preserve_resume.py");
-  const { stdout, stderr } = await execFileAsync("python3", [scriptPath, ...args], {
-    maxBuffer: 10 * 1024 * 1024,
+  try {
+    const { stdout, stderr } = await execFileAsync("python3", [scriptPath, ...args], {
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return { stdout: stdout?.trim(), stderr: stderr?.trim() };
+  } catch (error) {
+    const detail = [error.stderr, error.stdout].filter(Boolean).join("\n").trim();
+    const wrapped = new Error(`Format-preserving file processing failed.${detail ? ` ${detail}` : ""}`);
+    wrapped.details = detail;
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+
+function sendApiError(res, label, error) {
+  console.error(`${label}:`, error);
+  const details =
+    error?.details ||
+    [error?.stderr, error?.stdout].filter(Boolean).join("\n").trim() ||
+    (process.env.NODE_ENV !== "production" ? error?.stack : "");
+  res.status(500).json({
+    error: error?.message || "Unexpected server error.",
+    ...(details ? { details } : {}),
   });
-  return { stdout: stdout?.trim(), stderr: stderr?.trim() };
 }
 
 async function optimizeUploadedFilePreservingFormat({ file, jobDescription, analysisOptions }) {
@@ -246,8 +266,7 @@ app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
       aiEnabled: Boolean(process.env.OPENAI_API_KEY),
     });
   } catch (error) {
-    console.error("Analyze error:", error);
-    res.status(500).json({ error: error.message || "Unexpected server error." });
+    sendApiError(res, "Analyze error", error);
   }
 });
 
@@ -309,8 +328,7 @@ app.post("/api/optimize", upload.single("resumeFile"), async (req, res) => {
       aiEnabled: Boolean(process.env.OPENAI_API_KEY),
     });
   } catch (error) {
-    console.error("Optimize error:", error);
-    res.status(500).json({ error: error.message || "Unexpected server error." });
+    sendApiError(res, "Optimize error", error);
   }
 });
 
@@ -336,8 +354,7 @@ app.post("/api/optimize-file", upload.single("resumeFile"), async (req, res) => 
       aiEnabled: Boolean(process.env.OPENAI_API_KEY),
     });
   } catch (error) {
-    console.error("Optimize-file error:", error);
-    res.status(500).json({ error: error.message || "Unexpected server error." });
+    sendApiError(res, "Optimize-file error", error);
   }
 });
 

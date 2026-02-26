@@ -256,6 +256,29 @@ button:disabled {
   color: var(--success);
 }
 
+.error-card {
+  margin-top: 10px;
+  border: 1px solid rgba(185, 28, 28, 0.22);
+  border-radius: 12px;
+  background: rgba(254, 242, 242, 0.85);
+  padding: 10px;
+}
+
+.error-title {
+  margin: 0 0 6px;
+  color: var(--error);
+  font-weight: 700;
+}
+
+.error-details {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.82rem;
+  color: #7f1d1d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+}
+
 .tips-card {
   margin-top: 14px;
   border: 1px dashed rgba(15, 118, 110, 0.3);

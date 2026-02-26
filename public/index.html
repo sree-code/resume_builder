@@ -89,13 +89,17 @@
             </div>
           </div>
           <p id="statusText" class="status"></p>
+          <div id="errorCard" class="error-card" hidden>
+            <p class="error-title">Request Error</p>
+            <pre id="errorDetails" class="error-details"></pre>
+          </div>
         </form>
       </section>
 
       <section class="panel results-panel" id="resultsPanel" hidden>
         <div class="score-strip">
           <div class="score-card">
-            <p class="score-label">Simulated ATS Match</p>
+            <p class="score-label" id="scoreLabel">Simulated ATS Match</p>
             <p class="score-value"><span id="scoreValue">0</span><span class="percent">/100</span></p>
             <p class="score-band" id="scoreBand">-</p>
           </div>

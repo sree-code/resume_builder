@@ -19,8 +19,11 @@ const loaderSubtitle = document.getElementById("loaderSubtitle");
 const progressFill = document.getElementById("progressFill");
 const progressPercent = document.getElementById("progressPercent");
 const progressStep = document.getElementById("progressStep");
+const scoreLabel = document.getElementById("scoreLabel");
 const aggressivePersonalModeToggle = document.getElementById("aggressivePersonalMode");
 const jdKeywordListModeToggle = document.getElementById("jdKeywordListMode");
+const errorCard = document.getElementById("errorCard");
+const errorDetails = document.getElementById("errorDetails");
 
 let loaderTimer = null;
 let loaderStartedAt = 0;
@@ -28,6 +31,17 @@ let loaderStartedAt = 0;
 function setStatus(message, type = "info") {
   statusText.textContent = message || "";
   statusText.dataset.type = type;
+}
+
+function clearErrorPanel() {
+  if (errorCard) errorCard.hidden = true;
+  if (errorDetails) errorDetails.textContent = "";
+}
+
+function showErrorPanel(detailText) {
+  if (!errorCard || !errorDetails || !detailText) return;
+  errorDetails.textContent = detailText;
+  errorCard.hidden = false;
 }
 
 function setBusy(isBusy) {
@@ -88,6 +102,7 @@ function renderBreakdown(breakdown) {
 function renderAnalysis(analysis) {
   if (!analysis) return;
   resultsPanel.hidden = false;
+  if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match";
   document.getElementById("scoreValue").textContent = analysis.score;
   document.getElementById("scoreBand").textContent = analysis.scoreBand;
   document.getElementById("disclaimerText").textContent = analysis.disclaimer;
@@ -213,6 +228,7 @@ function resetOptimizeOnlySections() {
   scoreCompareGrid.hidden = true;
   changesCard.hidden = true;
   downloadCard.hidden = true;
+  if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match";
 }
 
 function startLoader(mode) {
@@ -304,15 +320,30 @@ async function submitAnalysis(mode = "analyze") {
   );
 
   try {
+    clearErrorPanel();
     const response = await fetch(endpoint, { method: "POST", body: formData });
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "Request failed.");
+    const rawText = await response.text();
+    let data = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (_parseErr) {
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}.`);
+      }
+      throw new Error("Server returned an invalid response.");
     }
 
-    const baseAnalysis = data.beforeAnalysis || data.analysis;
+    if (!response.ok) {
+      const err = new Error(data.error || `Request failed (${response.status}).`);
+      err.details = data.details || data.debug || rawText || "";
+      throw err;
+    }
+
+    const baseAnalysis = mode === "optimize" ? (data.afterAnalysis || data.analysis) : (data.beforeAnalysis || data.analysis);
     renderAnalysis(baseAnalysis);
+    if (mode === "optimize" && scoreLabel) {
+      scoreLabel.textContent = "Simulated ATS Match (After Optimization)";
+    }
     renderOptimization(data.optimization);
     renderDownloadOutput(data.output, data.optimization);
 
@@ -330,6 +361,7 @@ async function submitAnalysis(mode = "analyze") {
     finishLoader(true);
   } catch (error) {
     setStatus(error.message || "Unexpected error.", "error");
+    showErrorPanel(error.details || error.stack || "");
     finishLoader(false);
   } finally {
     setBusy(false);
