@@ -8,7 +8,9 @@ const resultsPanel = document.getElementById("resultsPanel");
 const optimizedCard = document.getElementById("optimizedCard");
 const copyOptimizedBtn = document.getElementById("copyOptimizedBtn");
 const downloadCard = document.getElementById("downloadCard");
-const downloadLink = document.getElementById("downloadLink");
+const downloadDocxLink = document.getElementById("downloadDocxLink");
+const downloadPdfLink = document.getElementById("downloadPdfLink");
+const downloadTxtLink = document.getElementById("downloadTxtLink");
 const downloadHint = document.getElementById("downloadHint");
 const scoreCompareGrid = document.getElementById("scoreCompareGrid");
 const changesCard = document.getElementById("changesCard");
@@ -20,13 +22,25 @@ const progressFill = document.getElementById("progressFill");
 const progressPercent = document.getElementById("progressPercent");
 const progressStep = document.getElementById("progressStep");
 const scoreLabel = document.getElementById("scoreLabel");
+const scoreInlineChange = document.getElementById("scoreInlineChange");
+const advancedAtsModeToggle = document.getElementById("advancedAtsMode");
 const aggressivePersonalModeToggle = document.getElementById("aggressivePersonalMode");
 const jdKeywordListModeToggle = document.getElementById("jdKeywordListMode");
+const aggressiveFileContentModeToggle = document.getElementById("aggressiveFileContentMode");
 const errorCard = document.getElementById("errorCard");
 const errorDetails = document.getElementById("errorDetails");
+const proposalReviewCard = document.getElementById("proposalReviewCard");
+const proposalReviewSummary = document.getElementById("proposalReviewSummary");
+const proposalList = document.getElementById("proposalList");
+const applySelectedBtn = document.getElementById("applySelectedBtn");
+const proposalSelectionMeta = document.getElementById("proposalSelectionMeta");
+const selectAllProposalsBtn = document.getElementById("selectAllProposalsBtn");
+const deselectAllProposalsBtn = document.getElementById("deselectAllProposalsBtn");
 
 let loaderTimer = null;
 let loaderStartedAt = 0;
+let currentDraftSessionId = "";
+let currentProposals = [];
 
 function setStatus(message, type = "info") {
   statusText.textContent = message || "";
@@ -49,8 +63,13 @@ function setBusy(isBusy) {
   optimizeAllBtn.disabled = isBusy;
   clearJobBtn.disabled = isBusy;
   clearResumeBtn.disabled = isBusy;
+  if (advancedAtsModeToggle) advancedAtsModeToggle.disabled = isBusy;
   if (aggressivePersonalModeToggle) aggressivePersonalModeToggle.disabled = isBusy;
   if (jdKeywordListModeToggle) jdKeywordListModeToggle.disabled = isBusy;
+  if (aggressiveFileContentModeToggle) aggressiveFileContentModeToggle.disabled = isBusy;
+  if (applySelectedBtn) applySelectedBtn.disabled = isBusy || !currentDraftSessionId || !getProposalSelectionCount();
+  if (selectAllProposalsBtn) selectAllProposalsBtn.disabled = isBusy || !currentProposals.length || getProposalSelectionCount() === currentProposals.length;
+  if (deselectAllProposalsBtn) deselectAllProposalsBtn.disabled = isBusy || !currentProposals.length || getProposalSelectionCount() === 0;
 }
 
 function renderChips(containerId, items, emptyText) {
@@ -103,6 +122,10 @@ function renderAnalysis(analysis) {
   if (!analysis) return;
   resultsPanel.hidden = false;
   if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match";
+  if (scoreInlineChange) {
+    scoreInlineChange.hidden = true;
+    scoreInlineChange.textContent = "";
+  }
   document.getElementById("scoreValue").textContent = analysis.score;
   document.getElementById("scoreBand").textContent = analysis.scoreBand;
   document.getElementById("disclaimerText").textContent = analysis.disclaimer;
@@ -115,7 +138,7 @@ function renderAnalysis(analysis) {
 }
 
 function renderOptimization(optimization) {
-  if (!optimization) {
+  if (!optimization || optimization.reviewRequired) {
     optimizedCard.hidden = true;
     return;
   }
@@ -131,27 +154,79 @@ function renderOptimization(optimization) {
 }
 
 function renderDownloadOutput(output, optimization) {
-  if (!output || !output.downloadUrl) {
+  const allLinks = [downloadDocxLink, downloadPdfLink, downloadTxtLink].filter(Boolean);
+  const hideAllLinks = () => {
+    allLinks.forEach((link) => {
+      link.hidden = true;
+      link.removeAttribute("href");
+      link.classList.remove("is-disabled");
+    });
+  };
+  if (!output) {
     downloadCard.hidden = true;
-    downloadLink.hidden = true;
+    hideAllLinks();
     return;
   }
-  downloadCard.hidden = false;
-  downloadLink.hidden = false;
-  downloadLink.href = output.downloadUrl;
-  downloadLink.download = output.fileName || "optimized_resume";
-  downloadLink.textContent = `Download ${output.fileName || "Updated File"}`;
 
-  if (optimization?.preserveFormat && String(output.format).toLowerCase() !== "txt") {
-    downloadHint.textContent = `Generated ${String(output.format || "").toUpperCase()} file with format-preserving updates (same layout target, targeted line edits only).`;
+  const downloads = output.downloads || {};
+  if (!downloads.docx && !downloads.pdf && !downloads.txt && output.downloadUrl) {
+    downloads[String(output.format || "").toLowerCase()] = output;
+  }
+
+  const bindLink = (el, entry, label, options = {}) => {
+    if (!el) return;
+    const { showDisabled = false, unavailableLabel = `${label} (Unavailable)` } = options;
+    if (!entry?.downloadUrl) {
+      el.hidden = !showDisabled;
+      el.removeAttribute("href");
+      el.classList.toggle("is-disabled", showDisabled);
+      if (showDisabled) el.textContent = unavailableLabel;
+      return;
+    }
+    el.hidden = false;
+    el.classList.remove("is-disabled");
+    el.href = entry.downloadUrl;
+    el.download = entry.fileName || label;
+    el.textContent = label;
+  };
+
+  const hasAny = Boolean(downloads.docx?.downloadUrl || downloads.pdf?.downloadUrl || downloads.txt?.downloadUrl);
+  if (!hasAny) {
+    downloadCard.hidden = true;
+    hideAllLinks();
+    return;
+  }
+
+  downloadCard.hidden = false;
+  const fileFlow = Boolean(downloads.docx || downloads.pdf);
+  bindLink(downloadDocxLink, downloads.docx, `Download DOCX${downloads.docx?.fileName ? ` (${downloads.docx.fileName})` : ""}`, {
+    showDisabled: fileFlow,
+    unavailableLabel: "Download DOCX (Unavailable for this output)",
+  });
+  bindLink(downloadPdfLink, downloads.pdf, `Download PDF${downloads.pdf?.fileName ? ` (${downloads.pdf.fileName})` : ""}`, {
+    showDisabled: fileFlow,
+    unavailableLabel: "Download PDF (Unavailable for this output)",
+  });
+  bindLink(downloadTxtLink, downloads.txt, `Download TXT${downloads.txt?.fileName ? ` (${downloads.txt.fileName})` : ""}`);
+
+  const hasDocx = Boolean(downloads.docx?.downloadUrl);
+  const hasPdf = Boolean(downloads.pdf?.downloadUrl);
+  if (optimization?.preserveFormat && (hasDocx || hasPdf)) {
+    downloadHint.textContent = hasDocx && hasPdf
+      ? "Generated DOCX and PDF downloads after applying selected changes. DOCX/PDF format-preserving flow may merge generated new points into nearby lines to protect layout."
+      : "Generated format-preserving file output after applying selected changes. New generated points may be merged into nearby lines to preserve layout.";
   } else {
-    downloadHint.textContent = `Generated ${String(output.format || "").toUpperCase()} optimized resume download.`;
+    downloadHint.textContent = "Generated optimized resume download after applying selected changes.";
   }
 }
 
 function renderScoreComparison(comparison) {
   if (!comparison) {
     scoreCompareGrid.hidden = true;
+    if (scoreInlineChange) {
+      scoreInlineChange.hidden = true;
+      scoreInlineChange.textContent = "";
+    }
     return;
   }
   scoreCompareGrid.hidden = false;
@@ -160,6 +235,10 @@ function renderScoreComparison(comparison) {
   const delta = comparison.delta ?? 0;
   const deltaText = `${delta >= 0 ? "+" : ""}${delta}`;
   document.getElementById("deltaScoreValue").textContent = deltaText;
+  if (scoreInlineChange) {
+    scoreInlineChange.hidden = false;
+    scoreInlineChange.textContent = `${comparison.beforeScore ?? 0} -> ${comparison.afterScore ?? 0}${delta ? ` (${deltaText})` : ""}`;
+  }
 }
 
 function renderKeywordAddPreview(previewItems) {
@@ -168,7 +247,7 @@ function renderKeywordAddPreview(previewItems) {
   if (!previewItems || !previewItems.length) {
     const li = document.createElement("li");
     li.className = "muted";
-    li.textContent = "No explicit missing-keyword additions were detected in edited lines.";
+    li.textContent = "No explicit missing-keyword additions were detected in selected changes.";
     list.appendChild(li);
     return;
   }
@@ -224,11 +303,146 @@ function renderChangesPreview(previewItems) {
   });
 }
 
+function resetProposalState() {
+  currentDraftSessionId = "";
+  currentProposals = [];
+  if (proposalReviewCard) proposalReviewCard.hidden = true;
+  if (proposalList) proposalList.innerHTML = "";
+  if (proposalSelectionMeta) proposalSelectionMeta.textContent = "0 selected";
+}
+
 function resetOptimizeOnlySections() {
-  scoreCompareGrid.hidden = true;
+  renderScoreComparison(null);
   changesCard.hidden = true;
   downloadCard.hidden = true;
+  optimizedCard.hidden = true;
+  resetProposalState();
   if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match";
+  if (scoreInlineChange) {
+    scoreInlineChange.hidden = true;
+    scoreInlineChange.textContent = "";
+  }
+}
+
+function getProposalSelectionCount() {
+  return currentProposals.filter((p) => p.selected !== false).length;
+}
+
+function updateProposalSelectionMeta() {
+  const selectedCount = getProposalSelectionCount();
+  if (proposalSelectionMeta) {
+    proposalSelectionMeta.textContent = `${selectedCount} selected of ${currentProposals.length}`;
+  }
+  if (applySelectedBtn) {
+    applySelectedBtn.disabled = !currentDraftSessionId || !selectedCount;
+  }
+  if (selectAllProposalsBtn) {
+    selectAllProposalsBtn.disabled = !currentProposals.length || selectedCount === currentProposals.length;
+  }
+  if (deselectAllProposalsBtn) {
+    deselectAllProposalsBtn.disabled = !currentProposals.length || selectedCount === 0;
+  }
+}
+
+function proposalTypeLabel(proposal) {
+  if (!proposal) return "Resume";
+  if (proposal.operation === "insert_after_line") {
+    return `${proposal.targetArea || "Resume"} (New Point)`;
+  }
+  return proposal.targetArea || proposal.type || "Resume";
+}
+
+function renderProposalReview({ proposals, proposalSummary }) {
+  currentProposals = Array.isArray(proposals) ? proposals.map((p) => ({ ...p, selected: p.selected !== false })) : [];
+  if (!currentProposals.length) {
+    if (proposalReviewCard) {
+      proposalReviewCard.hidden = false;
+      proposalList.innerHTML = `<p class="muted">No editable summary/experience/skills changes were generated for review. Try a full JD text or a different resume version.</p>`;
+    }
+    if (proposalReviewSummary) {
+      proposalReviewSummary.textContent = "No proposed changes available for approval.";
+    }
+    updateProposalSelectionMeta();
+    return;
+  }
+
+  if (proposalReviewCard) proposalReviewCard.hidden = false;
+  if (proposalReviewSummary) {
+    const summaryBits = [];
+    if (proposalSummary?.mandatoryAffected != null) summaryBits.push(`${proposalSummary.mandatoryAffected} keyword-targeted`);
+    if (proposalSummary?.experienceTargeted != null) summaryBits.push(`${proposalSummary.experienceTargeted} experience edits`);
+    if (proposalSummary?.summaryTargeted != null) summaryBits.push(`${proposalSummary.summaryTargeted} summary edits`);
+    if (proposalSummary?.generatedNewPoints != null) summaryBits.push(`${proposalSummary.generatedNewPoints} generated new points`);
+    proposalReviewSummary.textContent = `Review and approve generated changes before applying them to the resume. ${summaryBits.join(" • ")}`;
+  }
+
+  proposalList.innerHTML = "";
+  currentProposals.forEach((proposal) => {
+    const row = document.createElement("div");
+    row.className = `proposal-item ${proposal.selected !== false ? "is-selected" : "is-rejected"}`;
+    row.dataset.proposalId = proposal.proposalId;
+
+    const header = document.createElement("div");
+    header.className = "proposal-head";
+    header.innerHTML = `
+      <div>
+        <p class="proposal-title">${proposalTypeLabel(proposal)} • Line ${proposal.lineNumber}</p>
+        <p class="proposal-meta">${proposal.reason || "Keyword alignment improvement"}</p>
+      </div>
+      <div class="proposal-actions-inline">
+        <button type="button" class="icon-btn approve ${proposal.selected !== false ? "active" : ""}" data-action="approve" title="Approve">✓</button>
+        <button type="button" class="icon-btn reject ${proposal.selected === false ? "active" : ""}" data-action="reject" title="Reject">✕</button>
+      </div>
+    `;
+    row.appendChild(header);
+
+    if (proposal.addedKeywords?.length) {
+      const chips = document.createElement("div");
+      chips.className = "inline-chips";
+      proposal.addedKeywords.forEach((k) => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = `+ ${k}`;
+        chips.appendChild(chip);
+      });
+      row.appendChild(chips);
+    }
+
+    const before = document.createElement("pre");
+    before.className = "change-before";
+    before.textContent = `Before: ${proposal.before || ""}`;
+    row.appendChild(before);
+
+    const after = document.createElement("pre");
+    after.className = "change-after";
+    after.textContent = `After:  ${proposal.after || ""}`;
+    row.appendChild(after);
+
+    proposalList.appendChild(row);
+  });
+
+  updateProposalSelectionMeta();
+}
+
+function setProposalSelection(proposalId, selected) {
+  currentProposals = currentProposals.map((p) => (p.proposalId === proposalId ? { ...p, selected } : p));
+  const row = proposalList.querySelector(`[data-proposal-id="${CSS.escape(proposalId)}"]`);
+  if (!row) return;
+  row.classList.toggle("is-selected", selected);
+  row.classList.toggle("is-rejected", !selected);
+  row.querySelector('[data-action="approve"]')?.classList.toggle("active", selected);
+  row.querySelector('[data-action="reject"]')?.classList.toggle("active", !selected);
+  updateProposalSelectionMeta();
+}
+
+function setAllProposals(selected) {
+  if (!currentProposals.length) return;
+  currentProposals = currentProposals.map((p) => ({ ...p, selected }));
+  renderProposalReview({ proposals: currentProposals });
+}
+
+function getSelectedProposalIds() {
+  return currentProposals.filter((p) => p.selected !== false).map((p) => p.proposalId);
 }
 
 function startLoader(mode) {
@@ -237,28 +451,45 @@ function startLoader(mode) {
   loaderCard.hidden = false;
 
   const hasFile = document.getElementById("resumeFile").files.length > 0;
-  const steps = mode === "optimize"
-    ? (hasFile
-      ? [
-          { p: 8, label: "Upload received", sub: "Reading your resume file..." },
-          { p: 22, label: "Extracting content", sub: "Parsing DOCX/PDF while preserving structure..." },
-          { p: 42, label: "Analyzing ATS match", sub: "Scoring keyword coverage and missing terms..." },
-          { p: 67, label: "AI optimization", sub: "Rewriting targeted lines only (truthful edits only)..." },
-          { p: 82, label: "Applying file edits", sub: "Updating the original file format in place..." },
-          { p: 94, label: "Preparing download", sub: "Re-scoring and generating before/after comparison..." },
-        ]
-      : [
-          { p: 10, label: "Analyzing ATS match", sub: "Scoring current resume against the JD..." },
-          { p: 45, label: "AI optimization", sub: "Rewriting targeted summary/skills/bullet lines..." },
-          { p: 78, label: "Scoring after optimization", sub: "Comparing before vs after ATS match..." },
-          { p: 94, label: "Preparing download", sub: "Creating optimized text download..." },
-        ])
-    : [
-        { p: 15, label: "Analyzing ATS match", sub: "Extracting keywords and scoring alignment..." },
-        { p: 80, label: "Preparing insights", sub: "Collecting missing keywords and action plan..." },
-      ];
+  const steps =
+    mode === "optimize-apply"
+      ? (hasFile
+        ? [
+            { p: 10, label: "Applying approvals", sub: "Applying selected changes to your DOCX/PDF..." },
+            { p: 45, label: "Format-preserving update", sub: "Updating file lines in-place while preserving layout..." },
+            { p: 72, label: "Re-analyzing ATS score", sub: "Computing before vs after match score..." },
+            { p: 92, label: "Preparing download", sub: "Generating final file download link..." },
+          ]
+        : [
+            { p: 12, label: "Applying approvals", sub: "Applying approved line changes to resume text..." },
+            { p: 58, label: "Re-analyzing ATS score", sub: "Computing before vs after ATS match..." },
+            { p: 92, label: "Preparing download", sub: "Creating optimized text download..." },
+          ])
+      : mode === "optimize-propose"
+        ? (hasFile
+          ? [
+              { p: 8, label: "Upload received", sub: "Reading your resume file..." },
+              { p: 25, label: "Extracting content", sub: "Parsing DOCX/PDF while preserving structure..." },
+              { p: 48, label: "Analyzing ATS match", sub: "Scoring keyword coverage and missing terms..." },
+              { p: 78, label: "Generating proposals", sub: "AI is drafting summary/experience/skills changes for approval..." },
+              { p: 94, label: "Preparing review", sub: "Building approve/reject list of proposed points..." },
+            ]
+          : [
+              { p: 12, label: "Analyzing ATS match", sub: "Scoring current resume against the JD..." },
+              { p: 55, label: "Generating proposals", sub: "AI is drafting line updates for summary/experience/skills..." },
+              { p: 92, label: "Preparing review", sub: "Building approve/reject list..." },
+            ])
+        : [
+            { p: 15, label: "Analyzing ATS match", sub: "Extracting keywords and scoring alignment..." },
+            { p: 80, label: "Preparing insights", sub: "Collecting missing keywords and action plan..." },
+          ];
 
-  loaderTitle.textContent = mode === "optimize" ? "Optimizing your resume..." : "Analyzing your resume...";
+  loaderTitle.textContent =
+    mode === "optimize-apply"
+      ? "Applying selected resume changes..."
+      : mode === "optimize-propose"
+        ? "Generating optimization proposals..."
+        : "Analyzing your resume...";
   progressFill.style.width = "0%";
   progressPercent.textContent = "0%";
   progressStep.textContent = "Queued";
@@ -266,7 +497,7 @@ function startLoader(mode) {
 
   loaderTimer = setInterval(() => {
     const elapsed = Date.now() - loaderStartedAt;
-    const duration = mode === "optimize" ? 12000 : 4500;
+    const duration = mode === "analyze" ? 4500 : 12000;
     const raw = Math.min(96, Math.round((elapsed / duration) * 100));
 
     let step = steps[0];
@@ -287,75 +518,43 @@ function finishLoader(success = true) {
   progressFill.style.width = success ? "100%" : progressFill.style.width;
   progressPercent.textContent = success ? "100%" : progressPercent.textContent;
   progressStep.textContent = success ? "Completed" : "Stopped";
-  loaderSubtitle.textContent = success ? "Review score comparison, keyword adds, and download your updated resume." : "Request failed. Fix the issue and try again.";
+  loaderSubtitle.textContent = success
+    ? "Review the generated changes, ATS comparison, and final download."
+    : "Request failed. Fix the issue and try again.";
 
   setTimeout(() => {
     loaderCard.hidden = true;
   }, 700);
 }
 
-async function submitAnalysis(mode = "analyze") {
-  const formData = new FormData(form);
-  const hasFile = document.getElementById("resumeFile").files.length > 0;
-  const file = document.getElementById("resumeFile").files[0];
+function getOptimizeEndpoint() {
+  const fileInput = document.getElementById("resumeFile");
+  const hasFile = fileInput.files.length > 0;
+  const file = fileInput.files[0];
   const fileExt = file ? (file.name.split(".").pop() || "").toLowerCase() : "";
-  const useFileOptimize = mode === "optimize" && hasFile && ["docx", "pdf"].includes(fileExt);
+  const useFileOptimize = hasFile && ["docx", "pdf"].includes(fileExt);
+  return useFileOptimize ? "/api/optimize-file" : "/api/optimize";
+}
 
-  const endpoint =
-    mode === "optimize"
-      ? (useFileOptimize ? "/api/optimize-file" : "/api/optimize")
-      : "/api/analyze";
-
-  if (mode === "optimize" && !hasFile && !String(formData.get("resumeText") || "").trim()) {
-    setStatus("Please paste resume text or upload a resume file.", "error");
-    return;
-  }
-
+async function submitAnalyze() {
+  const formData = new FormData(form);
   setBusy(true);
-  startLoader(mode);
-  setStatus(
-    mode === "optimize"
-      ? "Analyzing + optimizing resume. Note: unsupported tech not present in your experience will not be fabricated."
-      : "Analyzing resume match..."
-  );
+  startLoader("analyze");
+  setStatus("Analyzing resume match...");
 
   try {
     clearErrorPanel();
-    const response = await fetch(endpoint, { method: "POST", body: formData });
+    const response = await fetch("/api/analyze", { method: "POST", body: formData });
     const rawText = await response.text();
-    let data = null;
-    try {
-      data = rawText ? JSON.parse(rawText) : {};
-    } catch (_parseErr) {
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}.`);
-      }
-      throw new Error("Server returned an invalid response.");
-    }
-
+    const data = rawText ? JSON.parse(rawText) : {};
     if (!response.ok) {
       const err = new Error(data.error || `Request failed (${response.status}).`);
       err.details = data.details || data.debug || rawText || "";
       throw err;
     }
 
-    const baseAnalysis = mode === "optimize" ? (data.afterAnalysis || data.analysis) : (data.beforeAnalysis || data.analysis);
-    renderAnalysis(baseAnalysis);
-    if (mode === "optimize" && scoreLabel) {
-      scoreLabel.textContent = "Simulated ATS Match (After Optimization)";
-    }
-    renderOptimization(data.optimization);
-    renderDownloadOutput(data.output, data.optimization);
-
-    if (mode === "optimize") {
-      renderScoreComparison(data.comparison);
-      renderKeywordAddPreview(data.changePreview);
-      renderChangesPreview(data.changePreview);
-    } else {
-      resetOptimizeOnlySections();
-      optimizedCard.hidden = true;
-    }
-
+    renderAnalysis(data.analysis || data.beforeAnalysis);
+    resetOptimizeOnlySections();
     const aiText = data.aiEnabled ? "AI optimization is enabled." : "AI optimization is not configured (set OPENAI_API_KEY).";
     setStatus(`Completed. ${aiText}`, "success");
     finishLoader(true);
@@ -368,13 +567,115 @@ async function submitAnalysis(mode = "analyze") {
   }
 }
 
+async function requestOptimizeProposals() {
+  const formData = new FormData(form);
+  const resumeText = String(formData.get("resumeText") || "").trim();
+  const hasFile = document.getElementById("resumeFile").files.length > 0;
+  if (!resumeText && !hasFile) {
+    setStatus("Please paste resume text or upload a resume file.", "error");
+    return;
+  }
+
+  setBusy(true);
+  startLoader("optimize-propose");
+  setStatus("Analyzing + generating optimization proposals for your approval...");
+
+  try {
+    clearErrorPanel();
+    const response = await fetch(getOptimizeEndpoint(), { method: "POST", body: formData });
+    const rawText = await response.text();
+    let data = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (_err) {
+      throw new Error(response.ok ? "Server returned an invalid response." : `Request failed (${response.status}).`);
+    }
+    if (!response.ok) {
+      const err = new Error(data.error || `Request failed (${response.status}).`);
+      err.details = data.details || data.debug || rawText || "";
+      throw err;
+    }
+
+    currentDraftSessionId = data.draftSessionId || "";
+    renderAnalysis(data.beforeAnalysis || data.analysis);
+    if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match (Before Optimization)";
+    renderOptimization(null);
+    renderDownloadOutput(null);
+    renderScoreComparison(null);
+    renderChangesPreview(null);
+    renderProposalReview(data);
+    setStatus("Review the generated changes. Approve or reject each point, then click Apply Selected Changes.", "success");
+    finishLoader(true);
+  } catch (error) {
+    resetProposalState();
+    setStatus(error.message || "Unexpected error.", "error");
+    showErrorPanel(error.details || error.stack || "");
+    finishLoader(false);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function applySelectedChanges() {
+  if (!currentDraftSessionId) {
+    setStatus("No optimization draft is active. Click Analyze + Optimize first.", "error");
+    return;
+  }
+  const selectedProposalIds = getSelectedProposalIds();
+  if (!selectedProposalIds.length) {
+    setStatus("Select at least one proposed change to apply.", "error");
+    return;
+  }
+
+  setBusy(true);
+  startLoader("optimize-apply");
+  setStatus("Applying selected changes and generating final optimized resume...");
+
+  try {
+    clearErrorPanel();
+    const response = await fetch("/api/apply-selected", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftSessionId: currentDraftSessionId, selectedProposalIds }),
+    });
+    const rawText = await response.text();
+    let data = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (_err) {
+      throw new Error(response.ok ? "Server returned an invalid response." : `Request failed (${response.status}).`);
+    }
+    if (!response.ok) {
+      const err = new Error(data.error || `Request failed (${response.status}).`);
+      err.details = data.details || data.debug || rawText || "";
+      throw err;
+    }
+
+    renderAnalysis(data.afterAnalysis || data.analysis);
+    if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match (After Optimization)";
+    renderOptimization(data.optimization);
+    renderDownloadOutput(data.output, data.optimization);
+    renderScoreComparison(data.comparison);
+    renderKeywordAddPreview(data.changePreview);
+    renderChangesPreview(data.changePreview);
+    setStatus("Selected changes applied. Review before vs after score and download the updated resume.", "success");
+    finishLoader(true);
+  } catch (error) {
+    setStatus(error.message || "Unexpected error.", "error");
+    showErrorPanel(error.details || error.stack || "");
+    finishLoader(false);
+  } finally {
+    setBusy(false);
+  }
+}
+
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  submitAnalysis("analyze");
+  submitAnalyze();
 });
 
 optimizeAllBtn.addEventListener("click", () => {
-  submitAnalysis("optimize");
+  requestOptimizeProposals();
 });
 
 clearJobBtn.addEventListener("click", () => {
@@ -385,6 +686,29 @@ clearJobBtn.addEventListener("click", () => {
 clearResumeBtn.addEventListener("click", () => {
   document.getElementById("resumeText").value = "";
   setStatus("Resume text cleared.");
+});
+
+proposalList?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const row = event.target.closest("[data-proposal-id]");
+  if (!row) return;
+  const action = button.dataset.action;
+  const proposalId = row.dataset.proposalId;
+  if (action === "approve") setProposalSelection(proposalId, true);
+  if (action === "reject") setProposalSelection(proposalId, false);
+});
+
+applySelectedBtn?.addEventListener("click", () => {
+  applySelectedChanges();
+});
+
+selectAllProposalsBtn?.addEventListener("click", () => {
+  setAllProposals(true);
+});
+
+deselectAllProposalsBtn?.addEventListener("click", () => {
+  setAllProposals(false);
 });
 
 copyOptimizedBtn.addEventListener("click", async () => {

@@ -54,9 +54,16 @@
 
           <div class="actions">
             <button type="submit" id="analyzeBtn">Analyze Match</button>
-            <button type="button" id="optimizeAllBtn" class="secondary">Analyze + Optimize + Download</button>
+            <button type="button" id="optimizeAllBtn" class="secondary">Analyze + Optimize</button>
           </div>
           <div class="grid two compact-grid">
+            <label class="toggle-option">
+              <input type="checkbox" id="advancedAtsMode" name="advancedAtsMode" checked />
+              <span>
+                <strong>Advanced ATS Mode (Beta)</strong>
+                <small>Improved keyword extraction/grouping and deeper proposal generation. Turn off to compare baseline scoring.</small>
+              </span>
+            </label>
             <label class="toggle-option">
               <input type="checkbox" id="aggressivePersonalMode" name="aggressivePersonalMode" checked />
               <span>
@@ -69,6 +76,13 @@
               <span>
                 <strong>Keyword-List JD Mode</strong>
                 <small>Use this when you paste raw keywords/phrases instead of a full job description.</small>
+              </span>
+            </label>
+            <label class="toggle-option">
+              <input type="checkbox" id="aggressiveFileContentMode" name="aggressiveFileContentMode" />
+              <span>
+                <strong>Aggressive ATS Content Mode (DOCX Beta)</strong>
+                <small>For DOCX uploads, inserts approved new points as real paragraphs for higher ATS lift. Layout/page breaks may shift. PDF still uses strict mode.</small>
               </span>
             </label>
           </div>
@@ -100,6 +114,7 @@
         <div class="score-strip">
           <div class="score-card">
             <p class="score-label" id="scoreLabel">Simulated ATS Match</p>
+            <p class="score-inline-change" id="scoreInlineChange" hidden></p>
             <p class="score-value"><span id="scoreValue">0</span><span class="percent">/100</span></p>
             <p class="score-band" id="scoreBand">-</p>
           </div>
@@ -166,10 +181,32 @@
           <textarea id="optimizedResumeOutput" readonly></textarea>
         </div>
 
+        <div class="result-card" id="proposalReviewCard" hidden>
+          <div class="card-head">
+            <h3>Review Generated Resume Changes</h3>
+            <div class="proposal-bulk-actions">
+              <button type="button" id="selectAllProposalsBtn" class="secondary small">Select All</button>
+              <button type="button" id="deselectAllProposalsBtn" class="secondary small">Deselect All</button>
+            </div>
+          </div>
+          <p id="proposalReviewSummary" class="hint">
+            Review the generated summary/experience/skills updates. Approve only the points that match your actual experience.
+          </p>
+          <div id="proposalList" class="proposal-list"></div>
+          <div class="proposal-footer">
+            <button type="button" id="applySelectedBtn">Apply Selected Changes</button>
+            <p id="proposalSelectionMeta" class="hint">0 selected</p>
+          </div>
+        </div>
+
         <div class="result-card" id="downloadCard" hidden>
           <h3>Optimized File Download</h3>
           <p class="hint" id="downloadHint">Format-preserving file output will appear here.</p>
-          <a id="downloadLink" class="download-link" href="#" download hidden>Download Updated File</a>
+          <div class="download-actions">
+            <a id="downloadDocxLink" class="download-link" href="#" download hidden>Download DOCX</a>
+            <a id="downloadPdfLink" class="download-link" href="#" download hidden>Download PDF</a>
+            <a id="downloadTxtLink" class="download-link" href="#" download hidden>Download TXT</a>
+          </div>
         </div>
 
         <div class="result-card" id="changesCard" hidden>

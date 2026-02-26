@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from copy import deepcopy
 import json
 import sys
 from pathlib import Path
@@ -102,7 +103,32 @@ def _set_paragraph_text_preserve_para_style(paragraph, new_text):
         paragraph.add_run(new_text)
 
 
-def apply_docx(input_path, output_path, mapping_payload, edits_payload):
+def _normalize_docx_insert_text_for_anchor(anchor_paragraph, new_text):
+    text = _clean_line_text(new_text)
+    if not text:
+        return text
+    anchor_text = _clean_line_text(getattr(anchor_paragraph, "text", ""))
+    # If the anchor paragraph is a Word list bullet (visible bullet not in text),
+    # avoid storing a literal "- " prefix because Word will render its own bullet.
+    if anchor_text and not anchor_text.lstrip().startswith(("-", "*", "•")):
+        text = text.lstrip()
+        text = text[2:] if text.startswith("- ") else text
+        text = text[2:] if text.startswith("* ") else text
+        text = text[2:] if text.startswith("• ") else text
+    return text
+
+
+def _insert_docx_paragraph_after(anchor_paragraph, text):
+    from docx.text.paragraph import Paragraph
+
+    new_p = deepcopy(anchor_paragraph._p)
+    anchor_paragraph._p.addnext(new_p)
+    new_para = Paragraph(new_p, anchor_paragraph._parent)
+    _set_paragraph_text_preserve_para_style(new_para, text)
+    return new_para
+
+
+def apply_docx(input_path, output_path, mapping_payload, line_edits, insertions=None):
     from docx import Document
 
     doc = Document(str(input_path))
@@ -110,7 +136,7 @@ def apply_docx(input_path, output_path, mapping_payload, edits_payload):
     mapping_by_line = {m["lineNumber"]: m for m in mapping_payload.get("lineMappings", []) if m.get("target") == "docx_paragraph"}
 
     applied = []
-    for edit in edits_payload:
+    for edit in line_edits or []:
         line_number = edit.get("lineNumber")
         new_text = edit.get("newText")
         if not isinstance(line_number, int) or not isinstance(new_text, str):
@@ -125,8 +151,44 @@ def apply_docx(input_path, output_path, mapping_payload, edits_payload):
         _set_paragraph_text_preserve_para_style(para, new_text)
         applied.append({"lineNumber": line_number, "paragraphIndex": para_idx})
 
+    inserted = []
+    normalized_insertions = []
+    for order_idx, ins in enumerate(insertions or []):
+        after_line = ins.get("afterLineNumber")
+        new_text = ins.get("newText")
+        if not isinstance(after_line, int) or not isinstance(new_text, str):
+            continue
+        mapping = mapping_by_line.get(after_line)
+        if not mapping:
+            continue
+        para_idx = mapping.get("paragraphIndex")
+        if not isinstance(para_idx, int) or para_idx < 0 or para_idx >= len(paragraphs):
+            continue
+        normalized_insertions.append(
+            {
+                "afterLineNumber": after_line,
+                "paragraphIndex": para_idx,
+                "newText": new_text,
+                "order": order_idx,
+            }
+        )
+
+    # Insert in reverse order per anchor to preserve requested sequence after the same line.
+    for ins in sorted(normalized_insertions, key=lambda x: (x["paragraphIndex"], x["order"]), reverse=True):
+        anchor_para = paragraphs[ins["paragraphIndex"]]
+        insert_text = _normalize_docx_insert_text_for_anchor(anchor_para, ins["newText"])
+        if not insert_text:
+            continue
+        _insert_docx_paragraph_after(anchor_para, insert_text)
+        inserted.append(
+            {
+                "afterLineNumber": ins["afterLineNumber"],
+                "paragraphIndex": ins["paragraphIndex"],
+            }
+        )
+
     doc.save(str(output_path))
-    return {"applied": applied, "outputPath": str(output_path)}
+    return {"applied": applied, "inserted": inserted, "outputPath": str(output_path)}
 
 
 def _color_int_to_rgb_tuple(color_int):
@@ -275,16 +337,30 @@ def cmd_apply(args):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mapping_payload = _load_json(args.mapping)
     edits_payload = _load_json(args.edits)
-    edits = edits_payload.get("lineEdits", edits_payload)
+    if isinstance(edits_payload, dict):
+        line_edits = edits_payload.get("lineEdits", [])
+        insertions = edits_payload.get("insertions", [])
+    else:
+        line_edits = edits_payload
+        insertions = []
     suffix = input_path.suffix.lower()
 
     if suffix == ".docx":
-        result = apply_docx(input_path, output_path, mapping_payload, edits)
+        result = apply_docx(input_path, output_path, mapping_payload, line_edits, insertions)
     elif suffix == ".pdf":
-        result = apply_pdf(input_path, output_path, mapping_payload, edits)
+        result = apply_pdf(input_path, output_path, mapping_payload, line_edits)
     else:
         raise ValueError("Supported input types: .docx, .pdf")
-    print(json.dumps({"ok": True, "appliedCount": len(result.get("applied", [])), "outputPath": str(output_path)}))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "appliedCount": len(result.get("applied", [])),
+                "insertedCount": len(result.get("inserted", [])) if isinstance(result, dict) else 0,
+                "outputPath": str(output_path),
+            }
+        )
+    )
 
 
 def main():

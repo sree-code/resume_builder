@@ -10,12 +10,18 @@ const { promisify } = require("util");
 
 const { parseResumeUpload } = require("./src/resumeParser");
 const { analyzeResumeAgainstJob } = require("./src/atsScorer");
-const { generateOptimizedResumeDraft } = require("./src/aiOptimizer");
+const {
+  generateOptimizedResumeDraft,
+  buildEditableLineCandidates,
+  applyLineEditsPreservingLayout,
+  generateSupplementalPointProposals,
+} = require("./src/aiOptimizer");
 
 const execFileAsync = promisify(execFile);
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const downloadStore = new Map();
+const draftStore = new Map();
 const TMP_ROOT = path.join(__dirname, "tmp");
 const GENERATED_DIR = path.join(TMP_ROOT, "generated");
 fs.mkdirSync(GENERATED_DIR, { recursive: true });
@@ -40,7 +46,9 @@ function parseBool(value) {
 
 function getAnalysisOptions(req) {
   return {
+    advancedAtsMode: req.body.advancedAtsMode == null ? true : parseBool(req.body.advancedAtsMode),
     aggressivePersonalMode: parseBool(req.body.aggressivePersonalMode),
+    aggressiveFileContentMode: parseBool(req.body.aggressiveFileContentMode),
     jdInputMode: parseBool(req.body.jdKeywordListMode) ? "keyword_list" : "auto",
   };
 }
@@ -70,6 +78,37 @@ async function runFormatScript(args) {
   }
 }
 
+async function tryConvertDocxToPdf(docxPath, targetPdfPath) {
+  const outDir = path.dirname(targetPdfPath);
+  const tmpProfile = path.join(TMP_ROOT, `lo_profile_${crypto.randomUUID()}`);
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(tmpProfile, { recursive: true });
+  try {
+    await execFileAsync("soffice", [
+      `-env:UserInstallation=file://${tmpProfile}`,
+      "--headless",
+      "--convert-to",
+      "pdf",
+      "--outdir",
+      outDir,
+      docxPath,
+    ], {
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const expected = path.join(outDir, `${path.basename(docxPath, path.extname(docxPath))}.pdf`);
+    if (!fs.existsSync(expected)) return null;
+    if (expected !== targetPdfPath) {
+      if (fs.existsSync(targetPdfPath)) fs.unlinkSync(targetPdfPath);
+      fs.renameSync(expected, targetPdfPath);
+    }
+    return targetPdfPath;
+  } catch (_err) {
+    return null;
+  } finally {
+    try { fs.rmSync(tmpProfile, { recursive: true, force: true }); } catch (_e) {}
+  }
+}
+
 function sendApiError(res, label, error) {
   console.error(`${label}:`, error);
   const details =
@@ -82,7 +121,27 @@ function sendApiError(res, label, error) {
   });
 }
 
-async function optimizeUploadedFilePreservingFormat({ file, jobDescription, analysisOptions }) {
+function registerFileDownload({ filePath, fileName, ext, originalName }) {
+  const downloadId = crypto.randomUUID();
+  downloadStore.set(downloadId, {
+    filePath,
+    fileName,
+    mimeType:
+      ext === ".docx"
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        : "application/pdf",
+    createdAt: Date.now(),
+    originalName: originalName || fileName,
+  });
+  return {
+    downloadId,
+    fileName,
+    format: ext.slice(1),
+    downloadUrl: `/api/download/${downloadId}`,
+  };
+}
+
+async function prepareFileOptimizationDraft({ file, jobDescription, analysisOptions }) {
   const ext = ensureSupportedFormat(file);
   const workId = crypto.randomUUID();
   const workDir = path.join(TMP_ROOT, workId);
@@ -91,10 +150,6 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription, anal
   const safeName = (file.originalname || `resume${ext}`).replace(/[^\w.\-]+/g, "_");
   const inputPath = path.join(workDir, `input${ext}`);
   const mappingPath = path.join(workDir, "mapping.json");
-  const editsPath = path.join(workDir, "edits.json");
-  const outputName = safeName.replace(new RegExp(`${ext.replace(".", "\\.")}$`, "i"), "") + `_optimized${ext}`;
-  const outputPath = path.join(GENERATED_DIR, `${workId}_${outputName}`);
-
   fs.writeFileSync(inputPath, file.buffer);
 
   await runFormatScript(["extract", "--input", inputPath, "--output", mappingPath]);
@@ -104,7 +159,7 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription, anal
     throw new Error("Could not extract text from uploaded file for optimization.");
   }
 
-  const analysis = analyzeResumeAgainstJob({
+  const beforeAnalysis = analyzeResumeAgainstJob({
     jobDescription,
     resumeText,
     metadata: {
@@ -118,54 +173,280 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription, anal
   const optimization = await generateOptimizedResumeDraft({
     jobDescription,
     resumeText,
-    analysis,
+    analysis: beforeAnalysis,
     options: analysisOptions,
   });
 
-  fs.writeFileSync(editsPath, JSON.stringify({ lineEdits: optimization.lineEdits || [] }, null, 2), "utf8");
+  const proposals = combineOptimizationAndMandatoryProposals(beforeAnalysis, optimization, resumeText, analysisOptions);
+  const outputName = safeName.replace(new RegExp(`${ext.replace(".", "\\.")}$`, "i"), "") + `_optimized${ext}`;
 
-  await runFormatScript(["apply", "--input", inputPath, "--mapping", mappingPath, "--edits", editsPath, "--output", outputPath]);
-
-  const afterMappingPath = path.join(workDir, "after_mapping.json");
-  await runFormatScript(["extract", "--input", outputPath, "--output", afterMappingPath]);
-  const afterMappingPayload = JSON.parse(fs.readFileSync(afterMappingPath, "utf8"));
-  const afterResumeText = (afterMappingPayload.text || optimization.optimizedResumeDraft || "").trim();
-  const afterAnalysis = analyzeResumeAgainstJob({
-    jobDescription,
-    resumeText: afterResumeText,
-    metadata: {
-      fileName: outputName,
-      source: `${afterMappingPayload.kind || mappingPayload.kind || "file"}-structured-optimized`,
-      formatPreservingFileFlow: true,
-      optimized: true,
-    },
-    options: analysisOptions,
-  });
-
-  const downloadId = crypto.randomUUID();
-  downloadStore.set(downloadId, {
-    filePath: outputPath,
-    fileName: outputName,
-    mimeType:
-      ext === ".docx"
-        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        : "application/pdf",
-    createdAt: Date.now(),
+  const draftSessionId = registerDraftSession({
+    kind: "file",
+    ext,
     originalName: file.originalname,
+    outputName,
+    inputPath,
+    mappingPath,
+    workDir,
+    jobDescription,
+    analysisOptions,
+    resumeText,
+    beforeAnalysis,
+    proposals,
+    optimizationMeta: {
+      mode: optimization.mode,
+      preserveFormat: optimization.preserveFormat,
+      notes: [
+        ...(optimization.notes || []),
+        "Mandatory keyword proposal generator is enabled (review generated experience points carefully before applying).",
+        ...(analysisOptions?.aggressiveFileContentMode
+          ? [ext === ".docx"
+            ? "Aggressive ATS Content Mode enabled: approved generated points can be inserted as new DOCX paragraphs (layout/pagination may shift)."
+            : "Aggressive ATS Content Mode requested, but PDF applies strict line-preserving updates (new points will be merged/skipped to protect layout)."]
+          : []),
+      ],
+    },
   });
 
   return {
-    analysis,
-    beforeAnalysis: analysis,
+    draftSessionId,
+    analysis: beforeAnalysis,
+    beforeAnalysis,
+    proposals,
+    changePreview: buildChangePreviewFromProposals(proposals),
+    proposalSummary: buildProposalSummary(proposals),
+    optimization: {
+      ...draftStore.get(draftSessionId).optimizationMeta,
+      optimizedResumeDraft: "",
+      lineEdits: (optimization.lineEdits || []).length,
+      appliedEdits: optimization.appliedEdits || [],
+      reviewRequired: true,
+    },
+  };
+}
+
+async function finalizeFileOptimizationDraft({ draft, selectedProposalIds }) {
+  const { selectedProposals, lineEdits, insertions } = getSelectedEditsFromDraft(draft, selectedProposalIds);
+  const aggressiveFileContentMode = draft.analysisOptions?.aggressiveFileContentMode === true;
+  const useAggressiveDocxInsertion = aggressiveFileContentMode && draft.ext === ".docx";
+
+  let finalLineEdits = lineEdits;
+  let fileApplyPayload = { lineEdits };
+  let skippedFileInsertions = [];
+  let appliedProposals = selectedProposals;
+  let fileApplyStrategy = "strict_merge";
+
+  if (insertions.length && useAggressiveDocxInsertion) {
+    fileApplyPayload = {
+      lineEdits,
+      insertions,
+      options: {
+        aggressiveInsertions: true,
+      },
+    };
+    fileApplyStrategy = "docx_aggressive_insert";
+  } else {
+    const fileMerge = mergeFileInsertionsIntoLineEdits(lineEdits, insertions);
+    finalLineEdits = fileMerge.lineEdits;
+    fileApplyPayload = { lineEdits: finalLineEdits };
+    skippedFileInsertions = fileMerge.skippedInsertions || [];
+    const skippedInsertionKeys = new Set(
+      skippedFileInsertions.map((ins) => `${ins.afterLineNumber}|${String(ins.newText || "").trim()}`)
+    );
+    appliedProposals = selectedProposals.filter((p) => {
+      if ((p.operation || "replace_line") !== "insert_after_line") return true;
+      const key = `${p.lineNumber}|${String(p.after || "").trim()}`;
+      return !skippedInsertionKeys.has(key);
+    });
+    if (insertions.length && aggressiveFileContentMode && draft.ext === ".pdf") {
+      fileApplyStrategy = "pdf_strict_fallback";
+    }
+  }
+
+  const editsPath = path.join(draft.workDir, "selected_edits.json");
+  const outputToken = crypto.randomUUID();
+  const outputPath = path.join(GENERATED_DIR, `${outputToken}_${draft.outputName}`);
+  const afterMappingPath = path.join(draft.workDir, `after_mapping_${outputToken}.json`);
+
+  fs.writeFileSync(editsPath, JSON.stringify(fileApplyPayload, null, 2), "utf8");
+  await runFormatScript(["apply", "--input", draft.inputPath, "--mapping", draft.mappingPath, "--edits", editsPath, "--output", outputPath]);
+  await runFormatScript(["extract", "--input", outputPath, "--output", afterMappingPath]);
+
+  const afterMappingPayload = JSON.parse(fs.readFileSync(afterMappingPath, "utf8"));
+  const afterResumeText = (afterMappingPayload.text || "").trim();
+  const afterAnalysis = analyzeResumeAgainstJob({
+    jobDescription: draft.jobDescription,
+    resumeText: afterResumeText || draft.resumeText,
+    metadata: {
+      fileName: draft.outputName,
+      source: `${afterMappingPayload.kind || "file"}-structured-optimized`,
+      formatPreservingFileFlow: true,
+      optimized: true,
+    },
+    options: draft.analysisOptions,
+  });
+
+  const output = registerFileDownload({
+    filePath: outputPath,
+    fileName: draft.outputName,
+    ext: draft.ext,
+    originalName: draft.originalName,
+  });
+  const downloads = {
+    docx: null,
+    pdf: null,
+  };
+  if (draft.ext === ".docx") {
+    downloads.docx = output;
+    const altPdfName = draft.outputName.replace(/\.docx$/i, ".pdf");
+    const altPdfPath = path.join(GENERATED_DIR, `${crypto.randomUUID()}_${altPdfName}`);
+    const convertedPdfPath = await tryConvertDocxToPdf(outputPath, altPdfPath);
+    if (convertedPdfPath) {
+      downloads.pdf = registerFileDownload({
+        filePath: convertedPdfPath,
+        fileName: altPdfName,
+        ext: ".pdf",
+        originalName: altPdfName,
+      });
+    }
+  } else if (draft.ext === ".pdf") {
+    downloads.pdf = output;
+  }
+
+  return {
+    beforeAnalysis: draft.beforeAnalysis,
     afterAnalysis,
-    comparison: buildScoreComparison(analysis, afterAnalysis),
-    changePreview: buildKeywordAdditionPreview(analysis, optimization),
-    optimization,
+    comparison: buildScoreComparison(draft.beforeAnalysis, afterAnalysis),
+    changePreview: buildChangePreviewFromProposals(appliedProposals),
+    appliedProposals,
+    optimization: {
+      ...(draft.optimizationMeta || {}),
+      appliedEdits: appliedProposals.map((p) => ({
+        lineNumber: p.lineNumber,
+        type: p.type,
+        before: p.before,
+        after: p.after,
+        reason: p.reason || "",
+      })),
+      lineEdits: finalLineEdits.length,
+      selectedProposalCount: appliedProposals.length,
+      fileApplyStrategy,
+      reviewRequired: false,
+      optimizedResumeDraft: afterResumeText,
+      notes: [
+        ...(draft.optimizationMeta?.notes || []),
+        ...(insertions.length && !useAggressiveDocxInsertion ? ["Format-preserving file apply merged generated new bullets into nearby existing lines to preserve DOCX/PDF layout."] : []),
+        ...(useAggressiveDocxInsertion && insertions.length ? ["Aggressive DOCX content mode inserted approved generated points as new paragraphs (layout or page breaks may shift)."] : []),
+        ...(aggressiveFileContentMode && draft.ext === ".pdf" && insertions.length ? ["PDF aggressive insertion is not supported yet; used strict line merge/skip behavior to preserve layout."] : []),
+        ...(skippedFileInsertions.length ? [`Skipped ${skippedFileInsertions.length} generated new-point insertions in file mode to protect layout or avoid overlong merged lines.`] : []),
+      ],
+    },
     output: {
-      downloadId,
-      fileName: outputName,
-      format: ext.slice(1),
-      downloadUrl: `/api/download/${downloadId}`,
+      ...output,
+      downloads,
+    },
+  };
+}
+
+async function prepareTextOptimizationDraft({ parsedResume, jobDescription, analysisOptions }) {
+  const resumeText = (parsedResume?.text || "").trim();
+  if (!resumeText) {
+    throw new Error("Resume text or a supported resume file is required.");
+  }
+
+  const beforeAnalysis = analyzeResumeAgainstJob({
+    jobDescription,
+    resumeText,
+    metadata: { fileName: parsedResume?.fileName, source: parsedResume?.source || "textarea" },
+    options: analysisOptions,
+  });
+
+  const optimization = await generateOptimizedResumeDraft({
+    jobDescription,
+    resumeText,
+    analysis: beforeAnalysis,
+    options: analysisOptions,
+  });
+
+  const proposals = combineOptimizationAndMandatoryProposals(beforeAnalysis, optimization, resumeText, analysisOptions);
+  const draftSessionId = registerDraftSession({
+    kind: "text",
+    jobDescription,
+    analysisOptions,
+    resumeText,
+    beforeAnalysis,
+    proposals,
+    optimizationMeta: {
+      mode: optimization.mode,
+      preserveFormat: optimization.preserveFormat,
+      notes: [
+        ...(optimization.notes || []),
+        "Mandatory keyword proposal generator can create new summary/experience points for review.",
+      ],
+    },
+  });
+
+  return {
+    draftSessionId,
+    analysis: beforeAnalysis,
+    beforeAnalysis,
+    proposals,
+    changePreview: buildChangePreviewFromProposals(proposals),
+    proposalSummary: buildProposalSummary(proposals),
+    optimization: {
+      ...draftStore.get(draftSessionId).optimizationMeta,
+      optimizedResumeDraft: "",
+      lineEdits: (optimization.lineEdits || []).length,
+      appliedEdits: optimization.appliedEdits || [],
+      reviewRequired: true,
+    },
+  };
+}
+
+async function finalizeTextOptimizationDraft({ draft, selectedProposalIds }) {
+  const { lines, candidates } = buildEditableLineCandidates(draft.resumeText);
+  const { selectedProposals, lineEdits, insertions } = getSelectedEditsFromDraft(draft, selectedProposalIds);
+  const applied = applyTextDraftWithInsertions(lines, candidates, lineEdits, insertions);
+  const optimizedResumeDraft = applied.optimizedResumeDraft || draft.resumeText;
+
+  const afterAnalysis = analyzeResumeAgainstJob({
+    jobDescription: draft.jobDescription,
+    resumeText: optimizedResumeDraft,
+    metadata: { source: "optimized-text", optimized: true },
+    options: draft.analysisOptions,
+  });
+
+  const output = registerTextDownload({
+    text: optimizedResumeDraft,
+    extension: "txt",
+    baseName: "optimized_resume",
+  });
+
+  return {
+    beforeAnalysis: draft.beforeAnalysis,
+    afterAnalysis,
+    comparison: buildScoreComparison(draft.beforeAnalysis, afterAnalysis),
+    changePreview: buildChangePreviewFromProposals(selectedProposals),
+    appliedProposals: selectedProposals,
+    optimization: {
+      ...(draft.optimizationMeta || {}),
+      appliedEdits: applied.appliedEdits || [],
+      lineEdits: lineEdits.length,
+      insertedLines: insertions.length,
+      appliedInsertedLines: applied.insertedCount || 0,
+      selectedProposalCount: selectedProposals.length,
+      reviewRequired: false,
+      optimizedResumeDraft,
+      notes: [
+        ...(draft.optimizationMeta?.notes || []),
+        ...(applied.skippedInsertions ? [`Skipped ${applied.skippedInsertions} generated insertions because they could not be safely placed.`] : []),
+      ],
+    },
+    output: {
+      ...output,
+      downloads: {
+        txt: output,
+      },
     },
   };
 }
@@ -214,6 +495,231 @@ function buildScoreComparison(beforeAnalysis, afterAnalysis) {
   };
 }
 
+function buildProposalsFromOptimization(beforeAnalysis, optimization) {
+  const edits = optimization?.appliedEdits || [];
+  const missingKeywords = beforeAnalysis?.insights?.topMissingKeywords || [];
+
+  return edits.map((edit, index) => {
+    const before = edit.before || "";
+    const after = edit.after || "";
+    const addedKeywords = missingKeywords.filter((keyword) => keywordInText(after, keyword) && !keywordInText(before, keyword));
+    const targetArea =
+      edit.type === "summary_line" ? "Professional Summary" :
+      edit.type === "skills_line" ? "Technical Skills" :
+      edit.type === "experience_bullet" || edit.type === "experience_line" ? "Experience" :
+      edit.type === "achievement_bullet" ? "Achievements" :
+      "Resume";
+
+    return {
+      proposalId: `p_${index + 1}_${edit.lineNumber}`,
+      selected: true,
+      operation: "replace_line",
+      lineNumber: edit.lineNumber,
+      type: edit.type,
+      targetArea,
+      reason: edit.reason || "",
+      before,
+      after,
+      addedKeywords,
+      affectsMandatoryKeyword: addedKeywords.length > 0,
+      anchorText: before,
+    };
+  });
+}
+
+function buildChangePreviewFromProposals(proposals) {
+  return (proposals || [])
+    .filter((p) => (p.addedKeywords || []).length > 0)
+    .slice(0, 20)
+    .map((p) => ({
+      lineNumber: p.lineNumber,
+      type: p.type,
+      reason: p.reason,
+      addedKeywords: p.addedKeywords,
+      before: p.before,
+      after: p.after,
+    }));
+}
+
+function dedupeAndRenumberProposals(proposals) {
+  const seen = new Set();
+  const unique = [];
+  for (const proposal of proposals || []) {
+    if (!proposal || typeof proposal.lineNumber !== "number") continue;
+    const key = [
+      proposal.operation || "replace_line",
+      proposal.lineNumber,
+      String(proposal.type || ""),
+      String(proposal.after || "").trim(),
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(proposal);
+  }
+  return unique.map((p, index) => ({
+    selected: p.selected !== false,
+    operation: p.operation || "replace_line",
+    ...p,
+    proposalId: `p_${index + 1}_${p.lineNumber}_${(p.operation || "replace_line") === "insert_after_line" ? "ins" : "rep"}`,
+  }));
+}
+
+function combineOptimizationAndMandatoryProposals(beforeAnalysis, optimization, resumeText, analysisOptions = {}) {
+  const base = buildProposalsFromOptimization(beforeAnalysis, optimization);
+  const advancedAtsMode = analysisOptions.advancedAtsMode !== false;
+  const generated = generateSupplementalPointProposals({
+    analysis: beforeAnalysis,
+    resumeText,
+    maxProposals: advancedAtsMode ? 30 : 10,
+  });
+  return dedupeAndRenumberProposals(advancedAtsMode ? [...base, ...generated] : base);
+}
+
+function buildProposalSummary(proposals) {
+  return {
+    total: proposals.length,
+    mandatoryAffected: proposals.filter((p) => p.affectsMandatoryKeyword).length,
+    experienceTargeted: proposals.filter((p) => p.targetArea === "Experience").length,
+    summaryTargeted: proposals.filter((p) => p.targetArea === "Professional Summary").length,
+    generatedNewPoints: proposals.filter((p) => p.operation === "insert_after_line").length,
+  };
+}
+
+function registerDraftSession(payload) {
+  const draftId = crypto.randomUUID();
+  draftStore.set(draftId, {
+    ...payload,
+    createdAt: Date.now(),
+  });
+  return draftId;
+}
+
+function getSelectedEditsFromDraft(draft, selectedProposalIds) {
+  const selectedSet = new Set(
+    Array.isArray(selectedProposalIds) && selectedProposalIds.length
+      ? selectedProposalIds
+      : (draft.proposals || []).filter((p) => p.selected !== false).map((p) => p.proposalId)
+  );
+  const selectedProposals = (draft.proposals || []).filter((p) => selectedSet.has(p.proposalId));
+  const lineEditsByLine = new Map();
+  const insertions = [];
+  for (const p of selectedProposals) {
+    if ((p.operation || "replace_line") === "insert_after_line") {
+      insertions.push({
+        afterLineNumber: p.lineNumber,
+        newText: p.after,
+        reason: p.reason || "",
+        type: p.type,
+        anchorText: p.anchorText || "",
+      });
+      continue;
+    }
+    lineEditsByLine.set(p.lineNumber, {
+      lineNumber: p.lineNumber,
+      newText: p.after,
+      reason: p.reason || "",
+      type: p.type,
+    });
+  }
+  const lineEdits = [...lineEditsByLine.values()].sort((a, b) => a.lineNumber - b.lineNumber);
+  return { selectedProposals, lineEdits, insertions };
+}
+
+function stripBulletPrefix(text) {
+  return String(text || "").replace(/^\s*[-*•]\s+/, "").trim();
+}
+
+function mergeFileInsertionsIntoLineEdits(lineEdits, insertions) {
+  const byLine = new Map();
+  const insertionCounts = new Map();
+  const skippedInsertions = [];
+  for (const edit of lineEdits || []) {
+    if (!edit || typeof edit.lineNumber !== "number") continue;
+    byLine.set(edit.lineNumber, { ...edit });
+  }
+
+  for (const insertion of insertions || []) {
+    const lineNumber = insertion.afterLineNumber;
+    if (typeof lineNumber !== "number") continue;
+    const prior = byLine.get(lineNumber);
+    const baseText = (prior?.newText || insertion.anchorText || "").trim();
+    const insertedText = String(insertion.newText || "").trim();
+    if (!baseText || !insertedText) {
+      skippedInsertions.push({ ...insertion, skipReason: "missing_anchor_or_text" });
+      continue;
+    }
+    if (!/^\s*[-*•]\s+/.test(baseText)) {
+      skippedInsertions.push({ ...insertion, skipReason: "anchor_not_bullet" });
+      continue;
+    }
+    const countForLine = insertionCounts.get(lineNumber) || 0;
+    if (countForLine >= 1) {
+      skippedInsertions.push({ ...insertion, skipReason: "line_insertion_limit" });
+      continue;
+    }
+
+    const merged =
+      /^\s*[-*•]\s+/.test(baseText)
+        ? `${baseText.replace(/\s+$/, "")}; ${stripBulletPrefix(insertedText)}`
+        : `${baseText.replace(/\s+$/, "")} ${stripBulletPrefix(insertedText)}`;
+    if (merged.length > 320) {
+      skippedInsertions.push({ ...insertion, skipReason: "merged_line_too_long" });
+      continue;
+    }
+
+    byLine.set(lineNumber, {
+      lineNumber,
+      newText: merged,
+      reason: `${prior?.reason ? `${prior.reason}; ` : ""}${insertion.reason || "Merged generated point to preserve file layout"}`.trim(),
+      type: prior?.type || "experience_line",
+    });
+    insertionCounts.set(lineNumber, countForLine + 1);
+  }
+
+  return {
+    lineEdits: [...byLine.values()].sort((a, b) => a.lineNumber - b.lineNumber),
+    skippedInsertions,
+  };
+}
+
+function applyTextDraftWithInsertions(lines, candidates, lineEdits, insertions) {
+  const appliedReplacements = applyLineEditsPreservingLayout(lines, candidates, lineEdits);
+  const updatedLines = String(appliedReplacements.optimizedResumeDraft || lines.join("\n")).split("\n");
+  const sortedInsertions = [...(insertions || [])].sort((a, b) => a.afterLineNumber - b.afterLineNumber);
+  let offset = 0;
+  const insertedApplied = [];
+
+  for (const insertion of sortedInsertions) {
+    const baseIdx = Number(insertion.afterLineNumber) - 1;
+    if (!Number.isInteger(baseIdx) || baseIdx < 0) continue;
+    let newLine = String(insertion.newText || "").replace(/\r?\n/g, " ").trimEnd();
+    if (!newLine.trim()) continue;
+    if (/^\s*[-*•]?\s*applied\b/i.test(newLine)) {
+      newLine = newLine.replace(/^(\s*[-*•]?\s*)applied\b/i, "$1Improved");
+    }
+    if (!/^\s*[-*•]\s+/.test(newLine)) {
+      newLine = `- ${newLine.trim()}`;
+    }
+    const insertAt = Math.min(updatedLines.length, baseIdx + 1 + offset);
+    updatedLines.splice(insertAt, 0, newLine);
+    offset += 1;
+    insertedApplied.push({
+      lineNumber: insertion.afterLineNumber,
+      type: insertion.type || "experience_bullet_insert",
+      before: `(Inserted after line ${insertion.afterLineNumber})`,
+      after: newLine,
+      reason: insertion.reason || "",
+    });
+  }
+
+  return {
+    optimizedResumeDraft: updatedLines.join("\n"),
+    appliedEdits: [...(appliedReplacements.appliedEdits || []), ...insertedApplied],
+    insertedCount: insertedApplied.length,
+    skippedInsertions: Math.max(0, (insertions || []).length - insertedApplied.length),
+  };
+}
+
 function registerTextDownload({ text, extension = "txt", baseName = "optimized_resume" }) {
   const id = crypto.randomUUID();
   const fileName = `${baseName}.${extension}`;
@@ -226,12 +732,13 @@ function registerTextDownload({ text, extension = "txt", baseName = "optimized_r
     createdAt: Date.now(),
     originalName: fileName,
   });
-  return {
+  const payload = {
     downloadId: id,
     fileName,
     format: extension,
     downloadUrl: `/api/download/${id}`,
   };
+  return payload;
 }
 
 app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
@@ -290,41 +797,14 @@ app.post("/api/optimize", upload.single("resumeFile"), async (req, res) => {
       return res.status(400).json({ error: "Resume text or a supported resume file is required." });
     }
 
-    const analysis = analyzeResumeAgainstJob({
+    const result = await prepareTextOptimizationDraft({
+      parsedResume: { ...parsedResume, fileName: req.file?.originalname },
       jobDescription,
-      resumeText,
-      metadata: { fileName: req.file?.originalname, source: parsedResume.source },
-      options: analysisOptions,
-    });
-
-    const optimization = await generateOptimizedResumeDraft({
-      jobDescription,
-      resumeText,
-      analysis,
-      options: analysisOptions,
-    });
-
-    const afterAnalysis = analyzeResumeAgainstJob({
-      jobDescription,
-      resumeText: optimization.optimizedResumeDraft || resumeText,
-      metadata: { source: "optimized-text", optimized: true },
-      options: analysisOptions,
-    });
-
-    const output = registerTextDownload({
-      text: optimization.optimizedResumeDraft || resumeText,
-      extension: "txt",
-      baseName: "optimized_resume",
+      analysisOptions,
     });
 
     res.json({
-      analysis,
-      beforeAnalysis: analysis,
-      afterAnalysis,
-      comparison: buildScoreComparison(analysis, afterAnalysis),
-      changePreview: buildKeywordAdditionPreview(analysis, optimization),
-      optimization,
-      output,
+      ...result,
       aiEnabled: Boolean(process.env.OPENAI_API_KEY),
     });
   } catch (error) {
@@ -343,7 +823,7 @@ app.post("/api/optimize-file", upload.single("resumeFile"), async (req, res) => 
       return res.status(400).json({ error: "Please upload a DOCX or PDF resume file." });
     }
 
-    const result = await optimizeUploadedFilePreservingFormat({
+    const result = await prepareFileOptimizationDraft({
       file: req.file,
       jobDescription,
       analysisOptions,
@@ -355,6 +835,36 @@ app.post("/api/optimize-file", upload.single("resumeFile"), async (req, res) => 
     });
   } catch (error) {
     sendApiError(res, "Optimize-file error", error);
+  }
+});
+
+app.post("/api/apply-selected", async (req, res) => {
+  try {
+    const draftSessionId = String(req.body.draftSessionId || "").trim();
+    if (!draftSessionId) {
+      return res.status(400).json({ error: "draftSessionId is required." });
+    }
+    const draft = draftStore.get(draftSessionId);
+    if (!draft) {
+      return res.status(404).json({ error: "Optimization draft not found or expired. Please run Analyze + Optimize again." });
+    }
+
+    const selectedProposalIds = Array.isArray(req.body.selectedProposalIds)
+      ? req.body.selectedProposalIds.map((v) => String(v))
+      : [];
+
+    const result =
+      draft.kind === "file"
+        ? await finalizeFileOptimizationDraft({ draft, selectedProposalIds })
+        : await finalizeTextOptimizationDraft({ draft, selectedProposalIds });
+
+    res.json({
+      draftSessionId,
+      ...result,
+      aiEnabled: Boolean(process.env.OPENAI_API_KEY),
+    });
+  } catch (error) {
+    sendApiError(res, "Apply-selected error", error);
   }
 });
 

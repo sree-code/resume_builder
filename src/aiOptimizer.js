@@ -40,6 +40,85 @@ function extractLeadingWhitespace(line) {
   return match ? match[0] : "";
 }
 
+function detectOverallExperienceYears(resumeText) {
+  const text = String(resumeText || "");
+  const matches = [...text.matchAll(/(\d{1,2})\s*\+?\s*years?(?:\s+of)?\s+experience/gi)];
+  const values = matches
+    .map((m) => Number(m[1]))
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 45);
+  if (!values.length) return 7;
+  // Prefer realistic total experience values and avoid tech-specific counts like "Java (18+)" without "experience".
+  return values[0];
+}
+
+function normalizeSummaryYearsText(text, overallYears) {
+  const years = Number.isFinite(overallYears) ? overallYears : 7;
+  return String(text || "").replace(/\b(\d{1,2})\s*\+?\s*years?\b/gi, (full, n, offset, src) => {
+    const nearby = src.slice(Math.max(0, offset - 20), Math.min(src.length, offset + full.length + 30)).toLowerCase();
+    if (!/experience|developer|engineer|software/.test(nearby)) return full;
+    return `${years}+ years`;
+  });
+}
+
+function lineStartsWithWeakVerb(line) {
+  return /^(?:[-*•]\s*)?(applied|experienced in)\b/i.test(String(line || "").trim());
+}
+
+function isLegacyGeneratedArtifactLine(line) {
+  const normalized = String(line || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.startsWith("improved production engineering outcomes by using ") ||
+    normalized.startsWith("- improved production engineering outcomes by using ")
+  );
+}
+
+function countLegacyGeneratedArtifactLines(resumeText) {
+  return String(resumeText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter(isLegacyGeneratedArtifactLine).length;
+}
+
+function improveWeakGeneratedLineStyle(text, candidateType) {
+  let line = String(text || "");
+  if (!lineStartsWithWeakVerb(line)) return line;
+  if (candidateType === "summary_line") {
+    line = line.replace(/^\s*experienced in\b/i, "Senior engineer with 7+ years of experience in");
+    line = line.replace(/^\s*applied\b/i, "Experienced in");
+    return line;
+  }
+  if (/^\s*[-*•]\s*applied\b/i.test(line)) {
+    line = line.replace(/^(\s*[-*•]\s*)applied\b/i, "$1Improved");
+  } else {
+    line = line.replace(/^\s*applied\b/i, "Improved");
+  }
+  return line;
+}
+
+function isProtectedExperienceMetadataLine(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return true;
+  if (/^(project|overview|client|environment|responsibilities?|role)\s*:/i.test(trimmed)) return true;
+  if (/implementation partner\s*-/i.test(trimmed)) return true;
+  if (/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(trimmed) && /\b\d{4}\b/.test(trimmed)) return true;
+  if (/[A-Za-z]+\s*,\s*[A-Z]{2}\s*[\-|·]\s*/.test(trimmed)) return true;
+  if (!/[.!?]/.test(trimmed) && trimmed.split(/\s+/).length <= 7) return true;
+  if (/^[A-Z][A-Za-z0-9&/ .-]+$/.test(trimmed) && trimmed.split(/\s+/).length <= 5) return true;
+  return false;
+}
+
+function looksLikeExperienceBulletText(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed || isProtectedExperienceMetadataLine(trimmed)) return false;
+  if (trimmed.length < 45) return false;
+  if (/^(this project|the project|responsible for)\b/i.test(trimmed)) return false;
+  const startsWithAction = /^(architected|built|owned|delivered|implemented|improved|optimized|designed|developed|led|modernized|created|diagnosed|reduced|increased|collaborated|standardized|guided|strengthened)\b/i.test(trimmed);
+  const hasSignal = /(?:\b\d+%|\bmillions?\b|\blatency\b|\bperformance\b|\breliability\b|\bscal\w+\b|\bproduction\b|\bapi\b|\bservices?\b)/i.test(trimmed);
+  return startsWithAction || hasSignal;
+}
+
 function buildEditableLineCandidates(resumeText) {
   const lines = String(resumeText || "").replace(/\r/g, "").split("\n");
   const candidates = [];
@@ -63,7 +142,12 @@ function buildEditableLineCandidates(resumeText) {
       return;
     }
 
-    if (isBulletLine(raw)) {
+    if (isLegacyGeneratedArtifactLine(raw)) {
+      if (currentSection === "experience") sectionBodyCount += 1;
+      return;
+    }
+
+    if (isBulletLine(raw) || (currentSection === "experience" && looksLikeExperienceBulletText(raw))) {
       const bulletSection =
         currentSection === "experience" ? "experience" :
         /achievement/i.test(currentSection || "") ? "achievements" :
@@ -118,14 +202,9 @@ function buildEditableLineCandidates(resumeText) {
       return;
     }
 
-    // Allow limited non-bullet experience lines (project labels / overview lines) to be refined.
-    if (currentSection === "experience" && sectionBodyCount < 10 && trimmed.length >= 12) {
-      candidates.push({
-        lineNumber: index + 1,
-        type: "experience_line",
-        section: currentSection,
-        originalText: raw,
-      });
+    // Do not rewrite non-bullet experience lines in line-preserving mode.
+    // These are often company/title/date/project metadata and can corrupt layout when edited.
+    if (currentSection === "experience" && !isProtectedExperienceMetadataLine(trimmed)) {
       sectionBodyCount += 1;
     }
   });
@@ -138,6 +217,7 @@ function applyLineEditsPreservingLayout(lines, candidates, edits) {
   const seen = new Set();
   const updated = [...lines];
   const applied = [];
+  const overallYears = detectOverallExperienceYears(lines.join("\n"));
 
   for (const edit of edits || []) {
     if (!edit || typeof edit.lineNumber !== "number" || typeof edit.newText !== "string") continue;
@@ -147,6 +227,15 @@ function applyLineEditsPreservingLayout(lines, candidates, edits) {
 
     let newText = edit.newText.replace(/\r?\n/g, " ").trimEnd();
     if (!newText.trim()) continue;
+    newText = improveWeakGeneratedLineStyle(newText, candidate.type);
+    if (
+      candidate.type === "summary_line" ||
+      candidate.type === "experience_line" ||
+      candidate.type === "experience_bullet" ||
+      candidate.type === "achievement_bullet"
+    ) {
+      newText = normalizeSummaryYearsText(newText, overallYears);
+    }
 
     if (candidate.type === "bullet") {
       const prefixMatch = candidate.originalText.match(/^(\s*[-*•]\s+)/);
@@ -155,9 +244,9 @@ function applyLineEditsPreservingLayout(lines, candidates, edits) {
       newText = prefix + newText.trim();
     } else if (candidate.type === "experience_bullet" || candidate.type === "achievement_bullet") {
       const prefixMatch = candidate.originalText.match(/^(\s*[-*•]\s+)/);
-      const prefix = prefixMatch ? prefixMatch[1] : "- ";
+      const prefix = prefixMatch ? prefixMatch[1] : "";
       newText = newText.replace(/^\s*[-*•]\s+/, "");
-      newText = prefix + newText.trim();
+      newText = prefix ? prefix + newText.trim() : extractLeadingWhitespace(candidate.originalText) + newText.trim();
     } else {
       const indent = extractLeadingWhitespace(candidate.originalText);
       newText = indent + newText.trim();
@@ -171,6 +260,7 @@ function applyLineEditsPreservingLayout(lines, candidates, edits) {
       candidate.type === "achievement_bullet" ? 340 :
       candidate.type === "skills_line" ? 320 :
       300;
+    if (candidate.type === "experience_bullet" && lineStartsWithWeakVerb(newText)) continue;
     if (newText.length > maxLen) continue;
     if (newText === candidate.originalText) continue;
 
@@ -186,6 +276,382 @@ function applyLineEditsPreservingLayout(lines, candidates, edits) {
   }
 
   return { optimizedResumeDraft: updated.join("\n"), appliedEdits: applied };
+}
+
+function normalizeKeywordPhrase(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+const LOW_SIGNAL_GENERATOR_KEYWORDS = new Set([
+  "contribute",
+  "acceptance",
+  "necessary",
+  "execute",
+  "detect",
+  "manual",
+  "methodology",
+  "passion",
+  "driving",
+  "orientated",
+  "quality",
+  "information",
+  "systems",
+  "system",
+  "product",
+  "products",
+  "services",
+  "technical tools",
+  "manual test cases",
+  "deliver multiple projects",
+  "methodology while reviewing",
+  "passion around driving",
+  "orientated language",
+  "product quality",
+  "information systems",
+  "system/product/services",
+]);
+
+const STRONG_SINGLE_GENERATOR_KEYWORDS = new Set([
+  "java", "go", "golang", "c#", "aws", "azure", "gcp", "terraform", "kafka", "redis", "sql",
+  "latency", "reliability", "correctness", "mentoring", "architecture", "observability", "livesite",
+  "indexing", "ttl", "consistency", "performance", "cloud",
+]);
+
+function normalizeLineForDedupe(text) {
+  return String(text || "")
+    .replace(/^\s*[-*•]\s+/, "")
+    .toLowerCase()
+    .replace(/[^\w#+/ ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeForDedupe(text) {
+  return normalizeLineForDedupe(text)
+    .split(/\s+/)
+    .filter((t) => t.length >= 2)
+    .filter((t) => !["the", "and", "for", "with", "using", "into", "from", "across", "under", "while"].includes(t));
+}
+
+function jaccardSimilarity(aTokens, bTokens) {
+  if (!aTokens.length || !bTokens.length) return 0;
+  const a = new Set(aTokens);
+  const b = new Set(bTokens);
+  let intersection = 0;
+  for (const t of a) {
+    if (b.has(t)) intersection += 1;
+  }
+  const union = new Set([...a, ...b]).size;
+  return union ? intersection / union : 0;
+}
+
+function isLowSignalKeywordForGenerator(keyword) {
+  const normalized = normalizeKeywordPhrase(keyword).toLowerCase();
+  if (!normalized) return true;
+  if (LOW_SIGNAL_GENERATOR_KEYWORDS.has(normalized)) return true;
+
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length === 1) {
+    const token = tokens[0];
+    if (STRONG_SINGLE_GENERATOR_KEYWORDS.has(token)) return false;
+    if (token.length <= 3 && !["ai", "go", "bs", "ms"].includes(token)) return true;
+    if (/(ed|ing|ive|ary|ory|able|tion|sion)$/.test(token) && !/(indexing|tuning|monitoring|messaging)$/.test(token)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasTechnicalSignal(keyword) {
+  const lower = normalizeKeywordPhrase(keyword).toLowerCase();
+  return /(api|service|cloud|distributed|latency|reliability|pipeline|stream|schema|serialization|index|query|cache|ttl|consistency|terraform|kafka|redis|java|go|c#|architecture|operational|performance|monitor|observability)/.test(lower);
+}
+
+function shouldSkipDuplicateGeneratedInsert(afterText, existingCanonicalLines, existingTokenSets, proposedCanonicalLines) {
+  const canonical = normalizeLineForDedupe(afterText);
+  if (!canonical) return true;
+  if (existingCanonicalLines.has(canonical)) return true;
+  if (proposedCanonicalLines.has(canonical)) return true;
+
+  // Suppress repeated generic fallback stems even if the keyword token changes.
+  if (canonical.startsWith("improved production engineering outcomes by using")) {
+    for (const line of existingCanonicalLines) {
+      if (line.startsWith("improved production engineering outcomes by using")) return true;
+    }
+    for (const line of proposedCanonicalLines) {
+      if (line.startsWith("improved production engineering outcomes by using")) return true;
+    }
+  }
+
+  const tokens = tokenizeForDedupe(afterText);
+  if (tokens.length >= 6) {
+    for (const tokenSet of existingTokenSets) {
+      if (jaccardSimilarity(tokens, tokenSet) >= 0.78) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function classifyMissingKeyword(keyword) {
+  const k = normalizeKeywordPhrase(keyword).toLowerCase();
+  if (!k) return "generic";
+  if (/apache flink/.test(k)) return "skip";
+  if (/senior software developer|technical leadership|leadership|write great code|ensuring correctness|exercising sound judgment|ic3/.test(k)) return "summary";
+  if (/low latency|performance|tuning|indexing|query|cache-aside|ttl strategy|performance troubleshooting|storage(?:\/|\s+)indexing/.test(k)) return "performance";
+  if (/distributed|production systems|reliability|operational|operational best practices|operational considerations|consistency tradeoffs/.test(k)) return "distributed";
+  if (/diagnos|schema|serialization|state issues|data-processing|pipeline|stream-processing|enrichment(?:\/|\s+)augmentation/.test(k)) return "diagnostics";
+  if (/architecture|cloud architecture|public cloud/.test(k)) return "architecture";
+  if (/iterative delivery|changing needs/.test(k)) return "delivery";
+  if (/guide other engineers|lower-level engineers/.test(k)) return "mentoring";
+  if (/complex tasks/.test(k)) return "scope";
+  return "generic";
+}
+
+function buildKeywordGroups(rawKeywords) {
+  const normalized = [...new Set((rawKeywords || []).map(normalizeKeywordPhrase).filter(Boolean))];
+  const lowerSet = new Set(normalized.map((k) => k.toLowerCase()));
+  const used = new Set();
+  const groups = [];
+
+  const compositeGroups = [
+    {
+      needsAll: ["review", "written", "peers"],
+      label: "review code written by peers",
+    },
+    {
+      needsAll: ["meet changing needs", "changing needs"],
+      label: "meet changing needs",
+    },
+    {
+      needsAll: ["processes", "procedures"],
+      label: "processes and procedures",
+    },
+    {
+      needsAll: ["operational considerations", "operational best practices"],
+      label: "operational considerations and best practices",
+    },
+    {
+      needsAll: ["indexing/query patterns", "storage/indexing"],
+      label: "storage/indexing and query patterns",
+    },
+    {
+      needsAll: ["guide other engineers", "lower-level engineers"],
+      label: "guide lower-level engineers",
+    },
+    {
+      needsAll: ["improving performance", "performance troubleshooting"],
+      label: "performance troubleshooting and optimization",
+    },
+    {
+      needsAll: ["ttl strategy", "consistency tradeoffs"],
+      label: "ttl strategy and consistency tradeoffs",
+    },
+  ];
+
+  for (const g of compositeGroups) {
+    const present = g.needsAll.filter((token) => lowerSet.has(token));
+    if (present.length === g.needsAll.length) {
+      present.forEach((token) => {
+        const original = normalized.find((k) => k.toLowerCase() === token);
+        if (original) used.add(original);
+      });
+      groups.push({
+        keyword: g.label,
+        sourceKeywords: normalized.filter((k) => g.needsAll.includes(k.toLowerCase())),
+      });
+    }
+  }
+
+  for (const keyword of normalized) {
+    if (used.has(keyword)) continue;
+    groups.push({ keyword, sourceKeywords: [keyword] });
+  }
+  return groups;
+}
+
+function buildSummaryProposalText(keyword) {
+  const k = normalizeKeywordPhrase(keyword);
+  const lower = k.toLowerCase();
+  if (/senior software developer/.test(lower)) {
+    return `Senior software developer with 7+ years of experience building scalable distributed systems, modern web applications, and production-grade backend services.`;
+  }
+  if (/technical leadership|leadership/.test(lower)) {
+    return `Provide technical leadership across design reviews, architecture decisions, and iterative delivery for customer-facing distributed services.`;
+  }
+  if (/ensuring correctness/.test(lower)) {
+    return `Focused on ensuring correctness, production reliability, and systematic problem-solving across high-scale application and service workflows.`;
+  }
+  if (/write great code/.test(lower)) {
+    return `Known for write great code standards through pragmatic design, maintainable implementations, and strong peer collaboration.`;
+  }
+  if (/exercising sound judgment|sound judgment/.test(lower)) {
+    return `Exercises sound judgment across complex tasks, production tradeoffs, and incremental delivery decisions in distributed systems.`;
+  }
+  if (/ic3/.test(lower)) {
+    return `Senior IC-level engineer with strong ownership across design, implementation, operational reliability, and delivery of complex software tasks.`;
+  }
+  return `Senior engineer with 7+ years of experience in ${k}, distributed application development, and production-focused delivery.`;
+}
+
+function buildExperienceInsertText(keyword) {
+  const k = normalizeKeywordPhrase(keyword);
+  const lower = k.toLowerCase();
+  if (!k || isLowSignalKeywordForGenerator(k)) return null;
+  if (/low latency|performance tuning|improving performance/.test(lower)) {
+    return `- Improved low latency API and UI response paths through profiling, performance tuning, and iterative optimization in distributed production systems.`;
+  }
+  if (/performance troubleshooting/.test(lower)) {
+    return `- Performed performance troubleshooting across APIs, database access paths, and service interactions to identify bottlenecks and improve production responsiveness.`;
+  }
+  if (/distributed production systems|highly distributed systems|distributed systems/.test(lower)) {
+    return `- Built and supported highly distributed systems in production, improving service resilience, observability, and operational response for customer-facing workflows.`;
+  }
+  if (/diagnosing data-processing|schema\/serialization problems|state issues/.test(lower)) {
+    return `- Diagnosed data-processing and state issues, including schema/serialization problems, to restore pipeline reliability and improve correctness in production integrations.`;
+  }
+  if (/pipeline reliability issues/.test(lower)) {
+    return `- Investigated pipeline reliability issues across service integrations and implemented fixes that improved stability, retries, and operational visibility.`;
+  }
+  if (/stream-processing architectures/.test(lower)) {
+    return `- Designed and supported stream-processing architectures for near real-time workflows, emphasizing reliability, monitoring, and operational recovery paths.`;
+  }
+  if (/enrichment(?:\/|\s+)augmentation/.test(lower)) {
+    return `- Built enrichment/augmentation steps in data and service workflows to improve downstream processing quality, consistency, and business usability.`;
+  }
+  if (/indexing\/query patterns|indexing|query patterns/.test(lower)) {
+    return `- Improved indexing/query patterns and backend access paths to reduce latency and improve performance under high-scale workloads.`;
+  }
+  if (/storage(?:\/|\s+)indexing/.test(lower)) {
+    return `- Optimized storage/indexing design and query access patterns to improve throughput, reduce latency, and support high-scale production usage.`;
+  }
+  if (/ttl strategy/.test(lower)) {
+    return `- Implemented TTL strategy in caching/data retention flows to balance data freshness, performance, and operational simplicity for production workloads.`;
+  }
+  if (/consistency tradeoffs/.test(lower)) {
+    return `- Evaluated consistency tradeoffs in distributed workflows and selected pragmatic designs aligned with reliability, performance, and business needs.`;
+  }
+  if (/cache-aside patterns/.test(lower)) {
+    return `- Implemented cache-aside patterns for frequently accessed data to improve throughput, reduce backend load, and support low latency responses.`;
+  }
+  if (/cloud architecture|public cloud platform/.test(lower)) {
+    return `- Contributed to cloud architecture decisions on public cloud platform services, aligning implementation choices with scalability and operational considerations.`;
+  }
+  if (/iterative delivery model/.test(lower)) {
+    return `- Delivered features using an iterative delivery model with phased rollouts, validation feedback, and continuous improvement across production services.`;
+  }
+  if (/operational considerations/.test(lower)) {
+    return `- Incorporated operational considerations into service design, including monitoring, failure handling, deployment safety, and support readiness.`;
+  }
+  if (/operational best practices/.test(lower)) {
+    return `- Standardized operational best practices for observability, incident response readiness, and deployment hygiene across distributed services.`;
+  }
+  if (/ensuring correctness/.test(lower)) {
+    return `- Strengthened service correctness with defensive validation, testing, and production diagnostics for distributed APIs and data flows.`;
+  }
+  if (/guide other engineers|lower-level engineers/.test(lower)) {
+    return `- Guided other engineers, including lower-level engineers, through design reviews, implementation tradeoffs, and delivery of complex production tasks.`;
+  }
+  if (/complex tasks/.test(lower)) {
+    return `- Owned complex tasks end-to-end by breaking scope into iterative deliverables, coordinating dependencies, and driving implementation to production readiness.`;
+  }
+  if (/exercising sound judgment/.test(lower)) {
+    return `- Exercised sound judgment during production incidents and delivery decisions, balancing correctness, timelines, and operational risk.`;
+  }
+  if (/changing needs/.test(lower)) {
+    return `- Adapted designs and implementation plans to changing needs while maintaining delivery momentum, service reliability, and code quality.`;
+  }
+  if (!hasTechnicalSignal(lower)) return null;
+  if (lower.split(/\s+/).length === 1 && !STRONG_SINGLE_GENERATOR_KEYWORDS.has(lower)) return null;
+  return `- Strengthened distributed service reliability and delivery quality by applying ${k} in production engineering workflows and operational support improvements.`;
+}
+
+function generateSupplementalPointProposals({ analysis, resumeText, maxProposals = 24 }) {
+  const missingKeywords = (analysis?.insights?.topMissingKeywords || []).slice(0, 30);
+  if (!missingKeywords.length) return [];
+
+  const { candidates } = buildEditableLineCandidates(resumeText);
+  const overallYears = detectOverallExperienceYears(resumeText);
+  const summaryCandidates = candidates.filter((c) => c.type === "summary_line");
+  const experienceAnchors = candidates.filter((c) => c.type === "experience_bullet" && !isLegacyGeneratedArtifactLine(c.originalText));
+  const existingCanonicalLines = new Set(
+    String(resumeText || "")
+      .split(/\r?\n/)
+      .map((line) => normalizeLineForDedupe(line))
+      .filter(Boolean)
+  );
+  const existingExperienceTokenSets = experienceAnchors
+    .map((c) => tokenizeForDedupe(c.originalText))
+    .filter((tokens) => tokens.length >= 4);
+
+  if (!summaryCandidates.length && !experienceAnchors.length) return [];
+
+  const groups = buildKeywordGroups(missingKeywords);
+  const proposals = [];
+  const proposedInsertCanonicals = new Set();
+  const usedSummaryLines = new Set();
+  let summaryCursor = 0;
+  let experienceCursor = 0;
+
+  for (const group of groups) {
+    if (proposals.length >= maxProposals) break;
+    const keyword = group.keyword;
+    if (isLowSignalKeywordForGenerator(keyword)) continue;
+    const category = classifyMissingKeyword(keyword);
+    if (category === "skip") continue;
+
+    const sourceKeywords = group.sourceKeywords || [keyword];
+    if (category === "summary" && summaryCandidates.length) {
+      let anchor = summaryCandidates.find((c) => !usedSummaryLines.has(c.lineNumber));
+      if (!anchor) {
+        anchor = summaryCandidates[summaryCursor % summaryCandidates.length];
+      }
+      summaryCursor += 1;
+      usedSummaryLines.add(anchor.lineNumber);
+      proposals.push({
+        operation: "replace_line",
+        lineNumber: anchor.lineNumber,
+        type: "summary_line",
+        targetArea: "Professional Summary",
+        reason: `Add explicit senior-level evidence for missing keyword(s): ${sourceKeywords.join(", ")}`,
+        before: anchor.originalText,
+        after: normalizeSummaryYearsText(buildSummaryProposalText(keyword), overallYears),
+        addedKeywords: sourceKeywords,
+        affectsMandatoryKeyword: true,
+        generatedBy: "mandatory_keyword_generator",
+        anchorText: anchor.originalText,
+      });
+      continue;
+    }
+
+    if (experienceAnchors.length) {
+      const anchor = experienceAnchors[experienceCursor % experienceAnchors.length];
+      experienceCursor += 1;
+      const afterText = buildExperienceInsertText(keyword);
+      if (!afterText) continue;
+      if (shouldSkipDuplicateGeneratedInsert(afterText, existingCanonicalLines, existingExperienceTokenSets, proposedInsertCanonicals)) {
+        continue;
+      }
+      proposedInsertCanonicals.add(normalizeLineForDedupe(afterText));
+      proposals.push({
+        operation: "insert_after_line",
+        lineNumber: anchor.lineNumber,
+        type: "experience_bullet_insert",
+        targetArea: "Experience",
+        reason: `New experience bullet to cover missing keyword(s): ${sourceKeywords.join(", ")}`,
+        before: `(Insert new bullet after line ${anchor.lineNumber})`,
+        after: afterText,
+        addedKeywords: sourceKeywords,
+        affectsMandatoryKeyword: true,
+        generatedBy: "mandatory_keyword_generator",
+        anchorText: anchor.originalText,
+      });
+    }
+  }
+
+  return proposals;
 }
 
 function buildFallbackOptimization({ analysis, resumeText }) {
@@ -220,6 +686,8 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
   const missingKeywords = (analysis?.insights?.topMissingKeywords || []).slice(0, 20);
   const topMatchedKeywords = (analysis?.insights?.topMatchedKeywords || []).slice(0, 20);
   const { lines, candidates } = buildEditableLineCandidates(resumeText);
+  const overallYears = detectOverallExperienceYears(resumeText);
+  const legacyArtifactCount = countLegacyGeneratedArtifactLines(resumeText);
 
   if (!candidates.length) {
     return {
@@ -260,6 +728,8 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     "- Preserve bullet prefixes (`-`, `*`, `•`) and avoid multi-line outputs.",
     "- Include job-description keywords only when they can be reasonably supported by the existing resume.",
     "- Keep each rewritten line concise and readable.",
+    "- Do NOT start experience bullets with weak filler verbs like 'Applied'. Use action + context + impact wording (e.g., improved/reduced/implemented/diagnosed/optimized/guided).",
+    `- If you mention total experience and the resume does not explicitly state a different total, use ${overallYears}+ years (do not inflate years from a skill-specific count).`,
     "- Edit summary and experience lines aggressively enough to improve ATS score; do not spend all edits on skill lists.",
     "- If the JD lists alternative languages (e.g., Java, Go, C#), do not fabricate experience with all of them. Strengthen evidence of the strongest truthful OO language and architecture/service experience.",
     "- You may add generic senior-engineering leadership phrasing (technical leadership, architecture, problem-solving, distributed services, production support) only if it plausibly matches the existing experience.",
@@ -397,6 +867,9 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
         ? ["For uploaded DOCX/PDF resumes, this preserves extracted text structure, not the original visual page layout."]
         : []),
       `Applied ${appliedEdits.length} line edits out of ${candidates.length} eligible lines.`,
+      ...(legacyArtifactCount >= 3
+        ? [`Detected ${legacyArtifactCount} previously generated legacy filler bullets from an older optimization run. Use your original resume (not a prior optimized export) for best ATS results and cleaner output.`]
+        : []),
       ...(parsed.changes || []),
       ...(parsed.cautionNotes || []),
     ].slice(0, 12),
@@ -411,4 +884,9 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
   };
 }
 
-module.exports = { generateOptimizedResumeDraft };
+module.exports = {
+  generateOptimizedResumeDraft,
+  buildEditableLineCandidates,
+  applyLineEditsPreservingLayout,
+  generateSupplementalPointProposals,
+};

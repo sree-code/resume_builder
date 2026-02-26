@@ -34,6 +34,10 @@ const LOW_SIGNAL_SINGLE_TOKENS = new Set([
   "write", "great", "existing", "technical", "field", "involving", "future", "one", "area",
   "market", "features", "meet", "business", "preferably", "similar", "highly", "public", "big", "systematic",
   "market-leading",
+  // Generic verbs/adjectives frequently extracted from job prose and harmful for resume-point generation
+  "contribute", "acceptance", "necessary", "execute", "detect", "manual", "methodology", "passion",
+  "orientated", "driving", "quality", "information", "systems", "system", "product", "products", "services",
+  "technicals", "tools", "deliver", "multiple", "projects", "around",
 ]);
 
 const KEYWORD_ALIASES = new Map([
@@ -200,6 +204,7 @@ function normalizeJobKeywords(keywords, jobDescription) {
     "other", "specify", "changing", "includes", "define", "implement", "member", "assist",
     "architects", "guide", "processes", "procedures", "review", "written", "peers",
     "other software developers", "meet changing needs",
+    "contribute", "acceptance", "necessary", "execute", "detect",
   ]);
 
   const out = [];
@@ -243,7 +248,16 @@ function extractKeywordsFromKeywordListText(jobDescription) {
     .map((s) => s.replace(/[.]+$/g, "").trim())
     .filter(Boolean)
     .filter((s) => s.length >= 2)
-    .filter((s) => s.split(/\s+/).length <= 8);
+    .filter((s) => s.split(/\s+/).length <= 8)
+    .filter((s) => {
+      const normalized = normalizeKeyword(s);
+      if (!normalized) return false;
+      if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) return false;
+      if (normalized.split(/\s+/).length === 1 && normalized.length <= 3 && !["ai", "go", "c#", "bs", "ms"].includes(normalized)) {
+        return false;
+      }
+      return true;
+    });
 
   return unique(chunks.map((s) => s.toLowerCase()));
 }
@@ -638,12 +652,11 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
   const normalizedResume = normalizeText(resumeText);
   const requestedMode = options.jdInputMode || "auto";
   const keywordListDetected = requestedMode === "keyword_list" || (requestedMode === "auto" && detectKeywordListMode(normalizedJD));
+  const advancedAtsMode = options.advancedAtsMode !== false;
   const aggressivePersonalMode = Boolean(options.aggressivePersonalMode);
 
-  const jdKeywords = normalizeJobKeywords(
-    keywordListDetected ? extractKeywordsFromKeywordListText(normalizedJD) : extractPhrases(normalizedJD),
-    normalizedJD
-  );
+  const rawJdKeywords = keywordListDetected ? extractKeywordsFromKeywordListText(normalizedJD) : extractPhrases(normalizedJD);
+  const jdKeywords = advancedAtsMode ? normalizeJobKeywords(rawJdKeywords, normalizedJD) : rawJdKeywords;
   const jobTitles = extractLikelyJobTitles(normalizedJD);
 
   const keywordCoverage = scoreKeywordCoverage(jdKeywords, normalizedResume);
@@ -679,7 +692,7 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
     score,
     scoreBand,
     disclaimer:
-      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}`,
+      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${advancedAtsMode ? " Advanced ATS mode is enabled (expanded keyword parsing/grouping)." : ""}${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}`,
     breakdown: {
       keywordCoverage: { max: 45, score: keywordCoverage.score },
       sections: { max: 15, score: sections.score },
@@ -692,8 +705,8 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
     insights: {
       extractedJobTitles: jobTitles,
       matchedTitle: roleAlignment.matchedTitle,
-      topMatchedKeywords: keywordCoverage.matchedKeywords.slice(0, 20),
-      topMissingKeywords: keywordCoverage.missingKeywords.slice(0, 20),
+      topMatchedKeywords: keywordCoverage.matchedKeywords.slice(0, advancedAtsMode ? 40 : 20),
+      topMissingKeywords: keywordCoverage.missingKeywords.slice(0, advancedAtsMode ? 40 : 20),
       presentSections: sections.presentSections,
       missingSections: sections.missingSections,
       formattingNotes: formatting.risks,
@@ -701,11 +714,12 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
       estimatedKeywordPoolSize: jdKeywords.length,
       keywordListDetected,
       jdInputModeUsed: keywordListDetected ? "keyword_list" : "standard_jd",
+      advancedAtsMode,
       aggressivePersonalMode,
       aggressiveMatchedConcepts: aggressiveBonus.matchedConcepts,
     },
     suggestions,
-    metadata: { ...metadata, analysisOptions: { requestedMode, keywordListDetected, aggressivePersonalMode } },
+    metadata: { ...metadata, analysisOptions: { requestedMode, keywordListDetected, advancedAtsMode, aggressivePersonalMode } },
   };
 }
 
