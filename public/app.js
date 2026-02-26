@@ -19,6 +19,8 @@ const loaderSubtitle = document.getElementById("loaderSubtitle");
 const progressFill = document.getElementById("progressFill");
 const progressPercent = document.getElementById("progressPercent");
 const progressStep = document.getElementById("progressStep");
+const aggressivePersonalModeToggle = document.getElementById("aggressivePersonalMode");
+const jdKeywordListModeToggle = document.getElementById("jdKeywordListMode");
 
 let loaderTimer = null;
 let loaderStartedAt = 0;
@@ -33,6 +35,8 @@ function setBusy(isBusy) {
   optimizeAllBtn.disabled = isBusy;
   clearJobBtn.disabled = isBusy;
   clearResumeBtn.disabled = isBusy;
+  if (aggressivePersonalModeToggle) aggressivePersonalModeToggle.disabled = isBusy;
+  if (jdKeywordListModeToggle) jdKeywordListModeToggle.disabled = isBusy;
 }
 
 function renderChips(containerId, items, emptyText) {

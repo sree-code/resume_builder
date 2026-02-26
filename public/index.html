@@ -56,6 +56,22 @@
             <button type="submit" id="analyzeBtn">Analyze Match</button>
             <button type="button" id="optimizeAllBtn" class="secondary">Analyze + Optimize + Download</button>
           </div>
+          <div class="grid two compact-grid">
+            <label class="toggle-option">
+              <input type="checkbox" id="aggressivePersonalMode" name="aggressivePersonalMode" checked />
+              <span>
+                <strong>Aggressive Personal Mode</strong>
+                <small>Equivalence-friendly scoring for personal ATS optimization (still avoids fabrication).</small>
+              </span>
+            </label>
+            <label class="toggle-option">
+              <input type="checkbox" id="jdKeywordListMode" name="jdKeywordListMode" />
+              <span>
+                <strong>Keyword-List JD Mode</strong>
+                <small>Use this when you paste raw keywords/phrases instead of a full job description.</small>
+              </span>
+            </label>
+          </div>
           <div id="loaderCard" class="loader-card" hidden>
             <div class="loader-top">
               <div class="spinner-orb" aria-hidden="true"></div>

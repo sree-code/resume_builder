@@ -32,6 +32,19 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+function parseBool(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return false;
+  return ["1", "true", "on", "yes"].includes(value.toLowerCase());
+}
+
+function getAnalysisOptions(req) {
+  return {
+    aggressivePersonalMode: parseBool(req.body.aggressivePersonalMode),
+    jdInputMode: parseBool(req.body.jdKeywordListMode) ? "keyword_list" : "auto",
+  };
+}
+
 function ensureSupportedFormat(file) {
   const originalName = file?.originalname || "resume";
   const ext = path.extname(originalName).toLowerCase();
@@ -49,7 +62,7 @@ async function runFormatScript(args) {
   return { stdout: stdout?.trim(), stderr: stderr?.trim() };
 }
 
-async function optimizeUploadedFilePreservingFormat({ file, jobDescription }) {
+async function optimizeUploadedFilePreservingFormat({ file, jobDescription, analysisOptions }) {
   const ext = ensureSupportedFormat(file);
   const workId = crypto.randomUUID();
   const workDir = path.join(TMP_ROOT, workId);
@@ -79,12 +92,14 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription }) {
       source: `${mappingPayload.kind || "file"}-structured`,
       formatPreservingFileFlow: true,
     },
+    options: analysisOptions,
   });
 
   const optimization = await generateOptimizedResumeDraft({
     jobDescription,
     resumeText,
     analysis,
+    options: analysisOptions,
   });
 
   fs.writeFileSync(editsPath, JSON.stringify({ lineEdits: optimization.lineEdits || [] }, null, 2), "utf8");
@@ -104,6 +119,7 @@ async function optimizeUploadedFilePreservingFormat({ file, jobDescription }) {
       formatPreservingFileFlow: true,
       optimized: true,
     },
+    options: analysisOptions,
   });
 
   const downloadId = crypto.randomUUID();
@@ -200,6 +216,7 @@ function registerTextDownload({ text, extension = "txt", baseName = "optimized_r
 
 app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
   try {
+    const analysisOptions = getAnalysisOptions(req);
     const jobDescription = (req.body.jobDescription || "").trim();
     const resumeTextInput = (req.body.resumeText || "").trim();
 
@@ -221,6 +238,7 @@ app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
       jobDescription,
       resumeText,
       metadata: { fileName: req.file?.originalname, source: parsedResume.source },
+      options: analysisOptions,
     });
 
     res.json({
@@ -235,6 +253,7 @@ app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
 
 app.post("/api/optimize", upload.single("resumeFile"), async (req, res) => {
   try {
+    const analysisOptions = getAnalysisOptions(req);
     const jobDescription = (req.body.jobDescription || "").trim();
     const resumeTextInput = (req.body.resumeText || "").trim();
 
@@ -256,18 +275,21 @@ app.post("/api/optimize", upload.single("resumeFile"), async (req, res) => {
       jobDescription,
       resumeText,
       metadata: { fileName: req.file?.originalname, source: parsedResume.source },
+      options: analysisOptions,
     });
 
     const optimization = await generateOptimizedResumeDraft({
       jobDescription,
       resumeText,
       analysis,
+      options: analysisOptions,
     });
 
     const afterAnalysis = analyzeResumeAgainstJob({
       jobDescription,
       resumeText: optimization.optimizedResumeDraft || resumeText,
       metadata: { source: "optimized-text", optimized: true },
+      options: analysisOptions,
     });
 
     const output = registerTextDownload({
@@ -294,6 +316,7 @@ app.post("/api/optimize", upload.single("resumeFile"), async (req, res) => {
 
 app.post("/api/optimize-file", upload.single("resumeFile"), async (req, res) => {
   try {
+    const analysisOptions = getAnalysisOptions(req);
     const jobDescription = (req.body.jobDescription || "").trim();
     if (!jobDescription) {
       return res.status(400).json({ error: "Job description is required." });
@@ -305,6 +328,7 @@ app.post("/api/optimize-file", upload.single("resumeFile"), async (req, res) => 
     const result = await optimizeUploadedFilePreservingFormat({
       file: req.file,
       jobDescription,
+      analysisOptions,
     });
 
     res.json({

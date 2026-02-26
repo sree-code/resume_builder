@@ -217,6 +217,37 @@ function normalizeJobKeywords(keywords, jobDescription) {
   return out;
 }
 
+function detectKeywordListMode(jobDescription) {
+  const normalized = normalizeText(jobDescription);
+  const nonEmptyLines = normalized.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!nonEmptyLines.length) return false;
+
+  const commaSegments = normalized.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+  if (nonEmptyLines.length <= 3 && commaSegments.length >= 8) {
+    return true;
+  }
+
+  if (nonEmptyLines.length < 6) return false;
+
+  const shortLines = nonEmptyLines.filter((line) => line.split(/\s+/).filter(Boolean).length <= 5).length;
+  const sentenceLike = nonEmptyLines.filter((line) => /[.!?]$/.test(line)).length;
+  return shortLines / nonEmptyLines.length >= 0.65 && sentenceLike / nonEmptyLines.length <= 0.35;
+}
+
+function extractKeywordsFromKeywordListText(jobDescription) {
+  const chunks = normalizeText(jobDescription)
+    .split("\n")
+    .flatMap((line) => line.split(/[,;]+/))
+    .map((s) => s.replace(/^[\-*•]\s*/, "").trim())
+    .filter(Boolean)
+    .map((s) => s.replace(/[.]+$/g, "").trim())
+    .filter(Boolean)
+    .filter((s) => s.length >= 2)
+    .filter((s) => s.split(/\s+/).length <= 8);
+
+  return unique(chunks.map((s) => s.toLowerCase()));
+}
+
 function extractLikelyJobTitles(jobDescription) {
   const lines = normalizeText(jobDescription).split("\n").map((l) => l.trim()).filter(Boolean);
   const titles = new Set();
@@ -336,6 +367,48 @@ function dedupeKeywordsForDisplay(keywords) {
     out.push(keyword);
   }
   return out;
+}
+
+function scoreAggressivePersonalBonus({ resumeText, jobKeywords, jobTitles, impact, roleAlignment }) {
+  const lowerResume = resumeText.toLowerCase();
+  const normalizedResume = normalizeKeyword(resumeText);
+  const resumeTokens = new Set(tokenize(resumeText).map(normalizeKeyword));
+
+  const concepts = [
+    "technical leadership",
+    "mentoring developers",
+    "cloud architecture",
+    "existing software architecture",
+    "highly distributed services",
+    "tier-one livesite",
+    "peer code review",
+    "engineering processes",
+    "changing needs",
+    "problem-solving",
+    "write great code",
+  ];
+
+  let score = 0;
+  const matchedConcepts = [];
+  for (const concept of concepts) {
+    const conceptRequested =
+      jobKeywords.some((k) => normalizeKeyword(k) === normalizeKeyword(concept)) ||
+      jobKeywords.some((k) => {
+        const nk = normalizeKeyword(k);
+        return nk.includes(normalizeKeyword(concept)) || normalizeKeyword(concept).includes(nk);
+      });
+    if (!conceptRequested) continue;
+    if (keywordMatchesResume(lowerResume, normalizedResume, resumeTokens, concept)) {
+      score += 2;
+      matchedConcepts.push(concept);
+    }
+  }
+
+  if (jobTitles.some((t) => /senior|staff|lead|principal/.test(t)) && roleAlignment.score >= 7) score += 2;
+  if (impact.score >= 3) score += 2;
+  if (impact.score >= 4) score += 1;
+
+  return { score: Math.min(20, score), matchedConcepts };
 }
 
 function getAlternativeGroupKey(normalizedKeyword) {
@@ -560,11 +633,17 @@ function buildSuggestions(analysisParts) {
   return suggestions;
 }
 
-function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) {
+function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, options = {} }) {
   const normalizedJD = normalizeText(jobDescription);
   const normalizedResume = normalizeText(resumeText);
+  const requestedMode = options.jdInputMode || "auto";
+  const keywordListDetected = requestedMode === "keyword_list" || (requestedMode === "auto" && detectKeywordListMode(normalizedJD));
+  const aggressivePersonalMode = Boolean(options.aggressivePersonalMode);
 
-  const jdKeywords = normalizeJobKeywords(extractPhrases(normalizedJD), normalizedJD);
+  const jdKeywords = normalizeJobKeywords(
+    keywordListDetected ? extractKeywordsFromKeywordListText(normalizedJD) : extractPhrases(normalizedJD),
+    normalizedJD
+  );
   const jobTitles = extractLikelyJobTitles(normalizedJD);
 
   const keywordCoverage = scoreKeywordCoverage(jdKeywords, normalizedResume);
@@ -573,6 +652,9 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) 
   const roleAlignment = scoreRoleAlignment(jobTitles, normalizedResume);
   const impact = scoreImpactEvidence(normalizedResume);
   const keywordPlacement = scoreKeywordPlacement(normalizedResume, keywordCoverage.missingKeywords.length ? keywordCoverage.matchedKeywords.concat(keywordCoverage.missingKeywords) : jdKeywords);
+  const aggressiveBonus = aggressivePersonalMode
+    ? scoreAggressivePersonalBonus({ resumeText: normalizedResume, jobKeywords: jdKeywords, jobTitles, impact, roleAlignment })
+    : { score: 0, matchedConcepts: [] };
 
   const score = Math.min(
     100,
@@ -581,7 +663,8 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) 
       formatting.score +
       roleAlignment.score +
       impact.score +
-      keywordPlacement.score
+      keywordPlacement.score +
+      aggressiveBonus.score
   );
 
   const scoreBand =
@@ -596,7 +679,7 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) 
     score,
     scoreBand,
     disclaimer:
-      "This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.",
+      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}`,
     breakdown: {
       keywordCoverage: { max: 45, score: keywordCoverage.score },
       sections: { max: 15, score: sections.score },
@@ -604,6 +687,7 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) 
       roleAlignment: { max: 10, score: roleAlignment.score },
       impactEvidence: { max: 5, score: impact.score },
       keywordPlacement: { max: 10, score: keywordPlacement.score },
+      ...(aggressivePersonalMode ? { aggressiveBonus: { max: 20, score: aggressiveBonus.score } } : {}),
     },
     insights: {
       extractedJobTitles: jobTitles,
@@ -615,9 +699,13 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {} }) 
       formattingNotes: formatting.risks,
       impactSignals: impact.signals,
       estimatedKeywordPoolSize: jdKeywords.length,
+      keywordListDetected,
+      jdInputModeUsed: keywordListDetected ? "keyword_list" : "standard_jd",
+      aggressivePersonalMode,
+      aggressiveMatchedConcepts: aggressiveBonus.matchedConcepts,
     },
     suggestions,
-    metadata,
+    metadata: { ...metadata, analysisOptions: { requestedMode, keywordListDetected, aggressivePersonalMode } },
   };
 }
 
