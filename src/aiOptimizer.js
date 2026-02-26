@@ -582,6 +582,9 @@ function buildSummaryProposalText(keyword) {
   if (/ic3/.test(lower)) {
     return `Senior IC-level engineer with strong ownership across design, implementation, operational reliability, and delivery of complex software tasks.`;
   }
+  if (/mobile release engineering|mobile release/.test(lower)) {
+    return `Senior software developer with 7+ years improving release engineering workflows, CI/CD automation, and production-quality delivery for high-impact customer applications.`;
+  }
   return `Senior engineer with 7+ years of experience in ${k}, distributed application development, and production-focused delivery.`;
 }
 
@@ -673,9 +676,10 @@ function buildExperienceInsertText(keyword) {
   return `- Strengthened distributed service reliability and delivery quality by applying ${k} in production engineering workflows and operational support improvements.`;
 }
 
-function generateSupplementalPointProposals({ analysis, resumeText, maxProposals = 24 }) {
+function generateSupplementalPointProposals({ analysis, resumeText, maxProposals = 24, options = {} }) {
   const missingKeywords = (analysis?.insights?.topMissingKeywords || []).slice(0, 30);
   if (!missingKeywords.length) return [];
+  const rolePreset = options.rolePreset || analysis?.metadata?.analysisOptions?.rolePreset || "general";
 
   const { candidates } = buildEditableLineCandidates(resumeText);
   const overallYears = detectOverallExperienceYears(resumeText);
@@ -736,6 +740,10 @@ function generateSupplementalPointProposals({ analysis, resumeText, maxProposals
       experienceCursor += 1;
       let afterText = buildExperienceInsertText(keyword);
       if (!afterText) continue;
+      // In mobile release preset, prefer more generated experience bullets and preserve distinct coverage.
+      if (rolePreset === "mobile_release" && /(mobile|release|cicd|ci\/cd|ios|android|reactjs|infra|communication|process improvement)/i.test(afterText)) {
+        // keep as-is; this branch exists as a preset-specific hook to avoid future generic reformatting
+      }
       afterText = ensureGeneratedBulletMetric(afterText, category);
       if (shouldSkipDuplicateGeneratedInsert(afterText, existingCanonicalLines, existingExperienceTokenSets, proposedInsertCanonicals)) {
         continue;
@@ -783,7 +791,7 @@ function buildFallbackOptimization({ analysis, resumeText }) {
   };
 }
 
-async function generateOptimizedResumeDraft({ jobDescription, resumeText, analysis }) {
+async function generateOptimizedResumeDraft({ jobDescription, resumeText, analysis, options = {} }) {
   if (!process.env.OPENAI_API_KEY || !OpenAI) {
     return buildFallbackOptimization({ analysis, resumeText });
   }
@@ -794,6 +802,7 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
   const { lines, candidates } = buildEditableLineCandidates(resumeText);
   const overallYears = detectOverallExperienceYears(resumeText);
   const legacyArtifactCount = countLegacyGeneratedArtifactLines(resumeText);
+  const rolePreset = options.rolePreset || analysis?.metadata?.analysisOptions?.rolePreset || "general";
 
   if (!candidates.length) {
     return {
@@ -836,6 +845,12 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     "- Keep each rewritten line concise and readable.",
     "- Do NOT start experience bullets with weak filler verbs like 'Applied'. Use action + context + impact wording (e.g., improved/reduced/implemented/diagnosed/optimized/guided).",
     "- For experience bullets, prefer action + scope/system + tech/context + measurable impact (percent, volume, latency, reliability, MTTR, throughput) when supported by the resume context.",
+    ...(rolePreset === "mobile_release"
+      ? [
+          "- This JD is using the Mobile Release / Release Engineering preset. Prioritize mobile release processes, CI/CD/build compilation steps, release tooling, infra checks, iOS/Android/ReactJS release workflow, and cross-functional release communication when truthfully supportable.",
+          "- Prefer measurable release-engineering outcomes (release success rate, rollout defects, turnaround time, release blockers, incident triage/MTTR, automation/manual effort reduction).",
+        ]
+      : []),
     `- If you mention total experience and the resume does not explicitly state a different total, use ${overallYears}+ years (do not inflate years from a skill-specific count).`,
     "- Edit summary and experience lines aggressively enough to improve ATS score; do not spend all edits on skill lists.",
     "- If the JD lists alternative languages (e.g., Java, Go, C#), do not fabricate experience with all of them. Strengthen evidence of the strongest truthful OO language and architecture/service experience.",

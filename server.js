@@ -44,8 +44,17 @@ function parseBool(value) {
   return ["1", "true", "on", "yes"].includes(value.toLowerCase());
 }
 
+function parseRolePreset(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "mobile_release" || raw === "mobile-release" || raw === "release_engineering") {
+    return "mobile_release";
+  }
+  return "general";
+}
+
 function getAnalysisOptions(req) {
   return {
+    rolePreset: parseRolePreset(req.body.rolePreset),
     advancedAtsMode: req.body.advancedAtsMode == null ? true : parseBool(req.body.advancedAtsMode),
     aggressivePersonalMode: parseBool(req.body.aggressivePersonalMode),
     aggressiveFileContentMode: parseBool(req.body.aggressiveFileContentMode),
@@ -567,10 +576,12 @@ function dedupeAndRenumberProposals(proposals) {
 function combineOptimizationAndMandatoryProposals(beforeAnalysis, optimization, resumeText, analysisOptions = {}) {
   const base = buildProposalsFromOptimization(beforeAnalysis, optimization);
   const advancedAtsMode = analysisOptions.advancedAtsMode !== false;
+  const presetBonus = analysisOptions.rolePreset === "mobile_release" ? 8 : 0;
   const generated = generateSupplementalPointProposals({
     analysis: beforeAnalysis,
     resumeText,
-    maxProposals: advancedAtsMode ? 30 : 10,
+    maxProposals: (advancedAtsMode ? 30 : 10) + presetBonus,
+    options: analysisOptions,
   });
   return dedupeAndRenumberProposals(advancedAtsMode ? [...base, ...generated] : base);
 }

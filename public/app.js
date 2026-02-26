@@ -23,6 +23,7 @@ const progressPercent = document.getElementById("progressPercent");
 const progressStep = document.getElementById("progressStep");
 const scoreLabel = document.getElementById("scoreLabel");
 const scoreInlineChange = document.getElementById("scoreInlineChange");
+const rolePresetSelect = document.getElementById("rolePreset");
 const advancedAtsModeToggle = document.getElementById("advancedAtsMode");
 const aggressivePersonalModeToggle = document.getElementById("aggressivePersonalMode");
 const jdKeywordListModeToggle = document.getElementById("jdKeywordListMode");
@@ -63,6 +64,7 @@ function setBusy(isBusy) {
   optimizeAllBtn.disabled = isBusy;
   clearJobBtn.disabled = isBusy;
   clearResumeBtn.disabled = isBusy;
+  if (rolePresetSelect) rolePresetSelect.disabled = isBusy;
   if (advancedAtsModeToggle) advancedAtsModeToggle.disabled = isBusy;
   if (aggressivePersonalModeToggle) aggressivePersonalModeToggle.disabled = isBusy;
   if (jdKeywordListModeToggle) jdKeywordListModeToggle.disabled = isBusy;

@@ -58,6 +58,16 @@
           </div>
           <div class="grid two compact-grid">
             <label class="toggle-option">
+              <span>
+                <strong>Optimization Preset</strong>
+                <small>Tune keyword extraction/scoring/proposal generation for a target role profile.</small>
+              </span>
+              <select id="rolePreset" name="rolePreset">
+                <option value="general" selected>General Sr Software Engineer</option>
+                <option value="mobile_release">Mobile Release / Release Engineering</option>
+              </select>
+            </label>
+            <label class="toggle-option">
               <input type="checkbox" id="advancedAtsMode" name="advancedAtsMode" checked />
               <span>
                 <strong>Advanced ATS Mode (Beta)</strong>

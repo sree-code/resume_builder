@@ -89,6 +89,25 @@ const LANGUAGE_ALTERNATIVE_GROUPS = [
   ["java", "go", "golang", "c#", "csharp", "python", "c++"],
 ];
 
+const MOBILE_RELEASE_PRESET_KEYWORDS = new Set([
+  "mobile release processes",
+  "release platform tools",
+  "high quality release",
+  "mobile release engineering",
+  "mobile ci/cd compilation and deployment",
+  "compilation steps",
+  "cicd",
+  "ci/cd",
+  "infra",
+  "ios",
+  "android",
+  "reactjs",
+  "cross-functional communication",
+  "engineering best practices",
+  "engineering processes",
+  "engineering process improvement",
+]);
+
 function normalizeText(text) {
   return (text || "")
     .replace(/\r/g, "\n")
@@ -191,8 +210,9 @@ function extractPhrases(jobDescription) {
   return unique(filtered);
 }
 
-function normalizeJobKeywords(keywords, jobDescription) {
+function normalizeJobKeywords(keywords, jobDescription, options = {}) {
   const text = normalizeKeyword(jobDescription);
+  const rolePreset = options.rolePreset || "general";
   const norms = new Set(keywords.map((k) => normalizeKeyword(k)));
   const items = [...keywords];
 
@@ -224,6 +244,21 @@ function normalizeJobKeywords(keywords, jobDescription) {
   if (/\bchanging needs\b/.test(text) || /\bmeet changing needs\b/.test(text)) {
     items.push("changing needs");
   }
+  if (rolePreset === "mobile_release") {
+    if ((norms.has("mobile release processes") || norms.has("release platform tools") || norms.has("high quality release")) &&
+        (norms.has("ios") || norms.has("android") || norms.has("reactjs"))) {
+      items.push("mobile release engineering");
+    }
+    if (norms.has("cicd") || norms.has("infra") || norms.has("compilation steps") || norms.has("deploying")) {
+      items.push("mobile ci/cd compilation and deployment");
+    }
+    if (norms.has("verbal communication skills") || norms.has("collaborate") || norms.has("manangers") || norms.has("managers")) {
+      items.push("cross-functional communication");
+    }
+    if (norms.has("engineering best practices") || norms.has("engineering processes") || norms.has("improvement") || norms.has("continuously") || norms.has("innovate")) {
+      items.push("engineering process improvement");
+    }
+  }
 
   const removeNoisy = new Set([
     "other", "specify", "changing", "includes", "define", "implement", "member", "assist",
@@ -233,6 +268,19 @@ function normalizeJobKeywords(keywords, jobDescription) {
     "basic", "qualifications", "basic qualifications", "deeply", "understand", "different", "such",
     "verbal", "continuously", "innovate", "fix", "steps", "step", "compilation",
   ]);
+  if (rolePreset === "mobile_release") {
+    [
+      "degree",
+      "masters",
+      "computer engineering",
+      "electrical engineering",
+      "electrical",
+      "qualification",
+      "qualifications",
+      "basic",
+      "basic qualifications",
+    ].forEach((k) => removeNoisy.add(k));
+  }
 
   const out = [];
   const seen = new Set();
@@ -266,7 +314,8 @@ function detectKeywordListMode(jobDescription) {
   return shortLines / nonEmptyLines.length >= 0.65 && sentenceLike / nonEmptyLines.length <= 0.35;
 }
 
-function extractKeywordsFromKeywordListText(jobDescription) {
+function extractKeywordsFromKeywordListText(jobDescription, options = {}) {
+  const rolePreset = options.rolePreset || "general";
   const chunks = normalizeText(jobDescription)
     .split("\n")
     .flatMap((line) => line.split(/[,;]+/))
@@ -280,6 +329,9 @@ function extractKeywordsFromKeywordListText(jobDescription) {
       const normalized = normalizeKeyword(s);
       if (!normalized) return false;
       if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) return false;
+      if (rolePreset === "mobile_release" && /^(basic|qualifications?|degree|masters?|electrical|computer engineering|electrical engineering)$/.test(normalized)) {
+        return false;
+      }
       if (normalized.split(/\s+/).length === 1 && normalized.length <= 3 && !["ai", "go", "c#", "bs", "ms"].includes(normalized)) {
         return false;
       }
@@ -320,7 +372,8 @@ function splitSections(resumeText) {
   };
 }
 
-function scoreKeywordCoverage(jobKeywords, resumeText) {
+function scoreKeywordCoverage(jobKeywords, resumeText, options = {}) {
+  const rolePreset = options.rolePreset || "general";
   const lowerResume = resumeText.toLowerCase();
   const normalizedResume = normalizeKeyword(resumeText);
   const resumeTokens = new Set(tokenize(resumeText).map(normalizeKeyword));
@@ -336,6 +389,7 @@ function scoreKeywordCoverage(jobKeywords, resumeText) {
     if (COMMON_SKILLS.includes(keyword)) weight = 3;
     if (keyword.includes(" ") && keyword.split(" ").length >= 2) weight += 1;
     if (/^(aws|gcp|azure|sql|api|react|node|python|java|docker|kubernetes|terraform)$/.test(normalized)) weight += 1;
+    if (rolePreset === "mobile_release" && MOBILE_RELEASE_PRESET_KEYWORDS.has(normalized)) weight += 2;
     if (LOW_SIGNAL_KEYWORDS.has(normalized)) weight = 0;
     if (/^(basic qualifications|qualifications|basic)$/.test(normalized)) weight = 0;
     if (/(^degree$|^masters?$|computer engineering|electrical engineering)/.test(normalized)) weight = Math.min(weight, 1);
@@ -680,15 +734,16 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
   const normalizedJD = normalizeText(jobDescription);
   const normalizedResume = normalizeText(resumeText);
   const requestedMode = options.jdInputMode || "auto";
+  const rolePreset = options.rolePreset || "general";
   const keywordListDetected = requestedMode === "keyword_list" || (requestedMode === "auto" && detectKeywordListMode(normalizedJD));
   const advancedAtsMode = options.advancedAtsMode !== false;
   const aggressivePersonalMode = Boolean(options.aggressivePersonalMode);
 
-  const rawJdKeywords = keywordListDetected ? extractKeywordsFromKeywordListText(normalizedJD) : extractPhrases(normalizedJD);
-  const jdKeywords = advancedAtsMode ? normalizeJobKeywords(rawJdKeywords, normalizedJD) : rawJdKeywords;
+  const rawJdKeywords = keywordListDetected ? extractKeywordsFromKeywordListText(normalizedJD, { rolePreset }) : extractPhrases(normalizedJD);
+  const jdKeywords = advancedAtsMode ? normalizeJobKeywords(rawJdKeywords, normalizedJD, { rolePreset }) : rawJdKeywords;
   const jobTitles = extractLikelyJobTitles(normalizedJD);
 
-  const keywordCoverage = scoreKeywordCoverage(jdKeywords, normalizedResume);
+  const keywordCoverage = scoreKeywordCoverage(jdKeywords, normalizedResume, { rolePreset });
   const sections = scoreSectionCompleteness(normalizedResume);
   const formatting = scoreFormattingReadability(normalizedResume);
   const roleAlignment = scoreRoleAlignment(jobTitles, normalizedResume);
@@ -721,7 +776,7 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
     score,
     scoreBand,
     disclaimer:
-      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${advancedAtsMode ? " Advanced ATS mode is enabled (expanded keyword parsing/grouping)." : ""}${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}`,
+      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${advancedAtsMode ? " Advanced ATS mode is enabled (expanded keyword parsing/grouping)." : ""}${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}${rolePreset !== "general" ? ` ${rolePreset === "mobile_release" ? "Mobile Release / Release Engineering preset is enabled." : ""}` : ""}`,
     breakdown: {
       keywordCoverage: { max: 45, score: keywordCoverage.score },
       sections: { max: 15, score: sections.score },
@@ -743,12 +798,13 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
       estimatedKeywordPoolSize: jdKeywords.length,
       keywordListDetected,
       jdInputModeUsed: keywordListDetected ? "keyword_list" : "standard_jd",
+      rolePreset,
       advancedAtsMode,
       aggressivePersonalMode,
       aggressiveMatchedConcepts: aggressiveBonus.matchedConcepts,
     },
     suggestions,
-    metadata: { ...metadata, analysisOptions: { requestedMode, keywordListDetected, advancedAtsMode, aggressivePersonalMode } },
+    metadata: { ...metadata, analysisOptions: { requestedMode, keywordListDetected, rolePreset, advancedAtsMode, aggressivePersonalMode } },
   };
 }
 
