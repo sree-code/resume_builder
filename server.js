@@ -15,6 +15,7 @@ const {
   buildEditableLineCandidates,
   applyLineEditsPreservingLayout,
   generateSupplementalPointProposals,
+  extractExperienceTargets,
 } = require("./src/aiOptimizer");
 
 const execFileAsync = promisify(execFile);
@@ -52,6 +53,23 @@ function parseRolePreset(value) {
   return "general";
 }
 
+function parseExplicitKeywords(value) {
+  return [...new Set(
+    String(value || "")
+      .split(/\n|,|;/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => item.toLowerCase())
+  )].slice(0, 60);
+}
+
+function parsePreferredExperienceTargetId(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "auto") return "";
+  if (!/^[A-Za-z0-9_.:-]{2,80}$/.test(raw)) return "";
+  return raw;
+}
+
 function getAnalysisOptions(req) {
   return {
     rolePreset: parseRolePreset(req.body.rolePreset),
@@ -59,6 +77,8 @@ function getAnalysisOptions(req) {
     aggressivePersonalMode: parseBool(req.body.aggressivePersonalMode),
     aggressiveFileContentMode: parseBool(req.body.aggressiveFileContentMode),
     jdInputMode: parseBool(req.body.jdKeywordListMode) ? "keyword_list" : "auto",
+    explicitMissingKeywords: parseExplicitKeywords(req.body.explicitMissingKeywords),
+    preferredExperienceTargetId: parsePreferredExperienceTargetId(req.body.experienceTargetId),
   };
 }
 
@@ -167,6 +187,8 @@ async function prepareFileOptimizationDraft({ file, jobDescription, analysisOpti
   if (!resumeText) {
     throw new Error("Could not extract text from uploaded file for optimization.");
   }
+  const experienceTargets = extractExperienceTargets(resumeText);
+  const selectedExperienceTargetLabel = experienceTargets.find((t) => t.id === analysisOptions.preferredExperienceTargetId)?.label || "";
 
   const beforeAnalysis = analyzeResumeAgainstJob({
     jobDescription,
@@ -200,6 +222,7 @@ async function prepareFileOptimizationDraft({ file, jobDescription, analysisOpti
     jobDescription,
     analysisOptions,
     resumeText,
+    experienceTargets,
     beforeAnalysis,
     proposals,
     optimizationMeta: {
@@ -207,6 +230,12 @@ async function prepareFileOptimizationDraft({ file, jobDescription, analysisOpti
       preserveFormat: optimization.preserveFormat,
       notes: [
         ...(optimization.notes || []),
+        ...(analysisOptions.explicitMissingKeywords?.length
+          ? [`Explicit user keywords requested: ${analysisOptions.explicitMissingKeywords.join(", ")}.`]
+          : []),
+        ...(selectedExperienceTargetLabel
+          ? [`Targeted experience block selected: ${selectedExperienceTargetLabel}. Generated points are anchored to this block when possible.`]
+          : []),
         "Mandatory keyword proposal generator is enabled (review generated experience points carefully before applying).",
         ...(analysisOptions?.aggressiveFileContentMode
           ? [ext === ".docx"
@@ -221,6 +250,7 @@ async function prepareFileOptimizationDraft({ file, jobDescription, analysisOpti
     draftSessionId,
     analysis: beforeAnalysis,
     beforeAnalysis,
+    experienceTargets,
     proposals,
     changePreview: buildChangePreviewFromProposals(proposals),
     proposalSummary: buildProposalSummary(proposals),
@@ -362,6 +392,8 @@ async function prepareTextOptimizationDraft({ parsedResume, jobDescription, anal
   if (!resumeText) {
     throw new Error("Resume text or a supported resume file is required.");
   }
+  const experienceTargets = extractExperienceTargets(resumeText);
+  const selectedExperienceTargetLabel = experienceTargets.find((t) => t.id === analysisOptions.preferredExperienceTargetId)?.label || "";
 
   const beforeAnalysis = analyzeResumeAgainstJob({
     jobDescription,
@@ -383,6 +415,7 @@ async function prepareTextOptimizationDraft({ parsedResume, jobDescription, anal
     jobDescription,
     analysisOptions,
     resumeText,
+    experienceTargets,
     beforeAnalysis,
     proposals,
     optimizationMeta: {
@@ -390,6 +423,12 @@ async function prepareTextOptimizationDraft({ parsedResume, jobDescription, anal
       preserveFormat: optimization.preserveFormat,
       notes: [
         ...(optimization.notes || []),
+        ...(analysisOptions.explicitMissingKeywords?.length
+          ? [`Explicit user keywords requested: ${analysisOptions.explicitMissingKeywords.join(", ")}.`]
+          : []),
+        ...(selectedExperienceTargetLabel
+          ? [`Targeted experience block selected: ${selectedExperienceTargetLabel}. Generated points are anchored to this block when possible.`]
+          : []),
         "Mandatory keyword proposal generator can create new summary/experience points for review.",
       ],
     },
@@ -399,6 +438,7 @@ async function prepareTextOptimizationDraft({ parsedResume, jobDescription, anal
     draftSessionId,
     analysis: beforeAnalysis,
     beforeAnalysis,
+    experienceTargets,
     proposals,
     changePreview: buildChangePreviewFromProposals(proposals),
     proposalSummary: buildProposalSummary(proposals),
@@ -577,10 +617,11 @@ function combineOptimizationAndMandatoryProposals(beforeAnalysis, optimization, 
   const base = buildProposalsFromOptimization(beforeAnalysis, optimization);
   const advancedAtsMode = analysisOptions.advancedAtsMode !== false;
   const presetBonus = analysisOptions.rolePreset === "mobile_release" ? 8 : 0;
+  const explicitBonus = Math.min(12, (analysisOptions.explicitMissingKeywords || []).length * 2);
   const generated = generateSupplementalPointProposals({
     analysis: beforeAnalysis,
     resumeText,
-    maxProposals: (advancedAtsMode ? 30 : 10) + presetBonus,
+    maxProposals: (advancedAtsMode ? 30 : 10) + presetBonus + explicitBonus,
     options: analysisOptions,
   });
   return dedupeAndRenumberProposals(advancedAtsMode ? [...base, ...generated] : base);
@@ -752,6 +793,30 @@ function registerTextDownload({ text, extension = "txt", baseName = "optimized_r
   return payload;
 }
 
+app.post("/api/resume-context", upload.single("resumeFile"), async (req, res) => {
+  try {
+    const resumeTextInput = (req.body.resumeText || "").trim();
+    let parsedResume = { text: resumeTextInput, source: "textarea" };
+    if (req.file) {
+      parsedResume = await parseResumeUpload(req.file);
+    }
+    const resumeText = (parsedResume.text || "").trim();
+    if (!resumeText) {
+      return res.json({
+        source: parsedResume.source,
+        experienceTargets: [],
+      });
+    }
+    const experienceTargets = extractExperienceTargets(resumeText);
+    res.json({
+      source: parsedResume.source,
+      experienceTargets,
+    });
+  } catch (error) {
+    sendApiError(res, "Resume-context error", error);
+  }
+});
+
 app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
   try {
     const analysisOptions = getAnalysisOptions(req);
@@ -778,9 +843,11 @@ app.post("/api/analyze", upload.single("resumeFile"), async (req, res) => {
       metadata: { fileName: req.file?.originalname, source: parsedResume.source },
       options: analysisOptions,
     });
+    const experienceTargets = extractExperienceTargets(resumeText);
 
     res.json({
       analysis,
+      experienceTargets,
       aiEnabled: Boolean(process.env.OPENAI_API_KEY),
     });
   } catch (error) {

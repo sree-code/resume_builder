@@ -24,6 +24,10 @@ const progressStep = document.getElementById("progressStep");
 const scoreLabel = document.getElementById("scoreLabel");
 const scoreInlineChange = document.getElementById("scoreInlineChange");
 const rolePresetSelect = document.getElementById("rolePreset");
+const explicitMissingKeywordsInput = document.getElementById("explicitMissingKeywords");
+const experienceTargetSelect = document.getElementById("experienceTargetId");
+const refreshExperienceTargetsBtn = document.getElementById("refreshExperienceTargetsBtn");
+const experienceTargetHint = document.getElementById("experienceTargetHint");
 const advancedAtsModeToggle = document.getElementById("advancedAtsMode");
 const aggressivePersonalModeToggle = document.getElementById("aggressivePersonalMode");
 const jdKeywordListModeToggle = document.getElementById("jdKeywordListMode");
@@ -42,6 +46,8 @@ let loaderTimer = null;
 let loaderStartedAt = 0;
 let currentDraftSessionId = "";
 let currentProposals = [];
+let resumeContextTimer = null;
+let resumeContextRequestId = 0;
 
 function setStatus(message, type = "info") {
   statusText.textContent = message || "";
@@ -65,6 +71,9 @@ function setBusy(isBusy) {
   clearJobBtn.disabled = isBusy;
   clearResumeBtn.disabled = isBusy;
   if (rolePresetSelect) rolePresetSelect.disabled = isBusy;
+  if (explicitMissingKeywordsInput) explicitMissingKeywordsInput.disabled = isBusy;
+  if (experienceTargetSelect) experienceTargetSelect.disabled = isBusy;
+  if (refreshExperienceTargetsBtn) refreshExperienceTargetsBtn.disabled = isBusy;
   if (advancedAtsModeToggle) advancedAtsModeToggle.disabled = isBusy;
   if (aggressivePersonalModeToggle) aggressivePersonalModeToggle.disabled = isBusy;
   if (jdKeywordListModeToggle) jdKeywordListModeToggle.disabled = isBusy;
@@ -72,6 +81,18 @@ function setBusy(isBusy) {
   if (applySelectedBtn) applySelectedBtn.disabled = isBusy || !currentDraftSessionId || !getProposalSelectionCount();
   if (selectAllProposalsBtn) selectAllProposalsBtn.disabled = isBusy || !currentProposals.length || getProposalSelectionCount() === currentProposals.length;
   if (deselectAllProposalsBtn) deselectAllProposalsBtn.disabled = isBusy || !currentProposals.length || getProposalSelectionCount() === 0;
+}
+
+function uniqueStrings(items) {
+  const seen = new Set();
+  const out = [];
+  (items || []).forEach((item) => {
+    const normalized = String(item || "").trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(String(item).trim());
+  });
+  return out;
 }
 
 function renderChips(containerId, items, emptyText) {
@@ -120,6 +141,81 @@ function renderBreakdown(breakdown) {
   });
 }
 
+function setExperienceTargetHint(message, type = "info") {
+  if (!experienceTargetHint) return;
+  experienceTargetHint.textContent = message || "";
+  experienceTargetHint.dataset.type = type;
+}
+
+function populateExperienceTargets(targets, preserveSelection = true) {
+  if (!experienceTargetSelect) return;
+  const previous = preserveSelection ? experienceTargetSelect.value : "auto";
+  experienceTargetSelect.innerHTML = "";
+
+  const autoOption = document.createElement("option");
+  autoOption.value = "auto";
+  autoOption.textContent = "Auto-detect best experience block";
+  experienceTargetSelect.appendChild(autoOption);
+
+  (targets || []).forEach((target) => {
+    const option = document.createElement("option");
+    option.value = target.id;
+    const bullets = target.bulletCount ? ` • ${target.bulletCount} bullets` : "";
+    option.textContent = `${target.label}${bullets}`;
+    experienceTargetSelect.appendChild(option);
+  });
+
+  if (previous && [...experienceTargetSelect.options].some((option) => option.value === previous)) {
+    experienceTargetSelect.value = previous;
+  }
+}
+
+async function loadResumeContext({ silent = false } = {}) {
+  if (!experienceTargetSelect) return;
+  const resumeText = String(document.getElementById("resumeText").value || "").trim();
+  const fileInput = document.getElementById("resumeFile");
+  const hasFile = fileInput.files.length > 0;
+  if (!resumeText && !hasFile) {
+    populateExperienceTargets([], false);
+    setExperienceTargetHint("Paste/upload resume content to detect experience blocks for targeted point insertion.");
+    return;
+  }
+
+  const requestId = ++resumeContextRequestId;
+  const payload = new FormData();
+  if (resumeText) payload.append("resumeText", resumeText);
+  if (hasFile) payload.append("resumeFile", fileInput.files[0]);
+
+  try {
+    const response = await fetch("/api/resume-context", { method: "POST", body: payload });
+    const data = await response.json();
+    if (requestId !== resumeContextRequestId) return;
+    if (!response.ok) {
+      throw new Error(data.error || `Resume context failed (${response.status}).`);
+    }
+    const targets = Array.isArray(data.experienceTargets) ? data.experienceTargets : [];
+    populateExperienceTargets(targets);
+    if (targets.length) {
+      setExperienceTargetHint(`Detected ${targets.length} experience block${targets.length > 1 ? "s" : ""} from ${data.source || "resume"}.`, "success");
+      if (!silent) setStatus("Experience targets refreshed from resume.", "success");
+    } else {
+      setExperienceTargetHint("No distinct experience blocks detected. Auto-target mode will be used.");
+      if (!silent) setStatus("No distinct experience blocks detected. Auto-target mode remains enabled.");
+    }
+  } catch (error) {
+    populateExperienceTargets([], false);
+    setExperienceTargetHint(error.message || "Could not load experience targets.", "error");
+    if (!silent) setStatus(error.message || "Could not load experience targets.", "error");
+  }
+}
+
+function scheduleResumeContextLoad(delayMs = 550) {
+  clearTimeout(resumeContextTimer);
+  resumeContextTimer = setTimeout(() => {
+    loadResumeContext({ silent: true });
+  }, delayMs);
+}
+
 function renderAnalysis(analysis) {
   if (!analysis) return;
   resultsPanel.hidden = false;
@@ -133,7 +229,11 @@ function renderAnalysis(analysis) {
   document.getElementById("disclaimerText").textContent = analysis.disclaimer;
   renderBreakdown(analysis.breakdown);
 
-  renderChips("missingKeywords", analysis.insights.topMissingKeywords, "No obvious missing keywords found.");
+  const missingKeywords = uniqueStrings([
+    ...(analysis?.insights?.topMissingTechnologies || []),
+    ...(analysis?.insights?.topMissingKeywords || []),
+  ]);
+  renderChips("missingKeywords", missingKeywords, "No obvious missing keywords found.");
   renderChips("matchedKeywords", analysis.insights.topMatchedKeywords, "No matched keywords detected yet.");
   renderList("suggestionsList", analysis.suggestions, "No suggestions generated.");
   renderList("formatNotes", analysis.insights.formattingNotes, "No formatting notes.");
@@ -556,6 +656,12 @@ async function submitAnalyze() {
     }
 
     renderAnalysis(data.analysis || data.beforeAnalysis);
+    if (Array.isArray(data.experienceTargets)) {
+      populateExperienceTargets(data.experienceTargets);
+      if (data.experienceTargets.length) {
+        setExperienceTargetHint(`Detected ${data.experienceTargets.length} experience block${data.experienceTargets.length > 1 ? "s" : ""} from your resume.`, "success");
+      }
+    }
     resetOptimizeOnlySections();
     const aiText = data.aiEnabled ? "AI optimization is enabled." : "AI optimization is not configured (set OPENAI_API_KEY).";
     setStatus(`Completed. ${aiText}`, "success");
@@ -600,6 +706,12 @@ async function requestOptimizeProposals() {
 
     currentDraftSessionId = data.draftSessionId || "";
     renderAnalysis(data.beforeAnalysis || data.analysis);
+    if (Array.isArray(data.experienceTargets)) {
+      populateExperienceTargets(data.experienceTargets);
+      if (data.experienceTargets.length) {
+        setExperienceTargetHint(`Detected ${data.experienceTargets.length} experience block${data.experienceTargets.length > 1 ? "s" : ""}; proposals can target your selected block.`, "success");
+      }
+    }
     if (scoreLabel) scoreLabel.textContent = "Simulated ATS Match (Before Optimization)";
     renderOptimization(null);
     renderDownloadOutput(null);
@@ -688,6 +800,19 @@ clearJobBtn.addEventListener("click", () => {
 clearResumeBtn.addEventListener("click", () => {
   document.getElementById("resumeText").value = "";
   setStatus("Resume text cleared.");
+  scheduleResumeContextLoad(100);
+});
+
+document.getElementById("resumeText").addEventListener("input", () => {
+  scheduleResumeContextLoad();
+});
+
+document.getElementById("resumeFile").addEventListener("change", () => {
+  scheduleResumeContextLoad(120);
+});
+
+refreshExperienceTargetsBtn?.addEventListener("click", () => {
+  loadResumeContext({ silent: false });
 });
 
 proposalList?.addEventListener("click", (event) => {
@@ -732,4 +857,5 @@ copyOptimizedBtn.addEventListener("click", async () => {
   } catch (_err) {
     setStatus("Ready.");
   }
+  loadResumeContext({ silent: true });
 })();

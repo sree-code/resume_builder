@@ -119,9 +119,94 @@ function looksLikeExperienceBulletText(line) {
   return startsWithAction || hasSignal;
 }
 
+function slugifyToken(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 42);
+}
+
+function findExperienceTargetLabel(lines, lineIndex) {
+  for (let i = lineIndex - 2; i >= 0; i -= 1) {
+    const raw = String(lines[i] || "");
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const section = detectSection(trimmed);
+    if (section && section !== "experience") break;
+    if (section === "experience") continue;
+    if (isBulletLine(trimmed)) continue;
+    if (/^(overview|client|environment|responsibilities?)\s*:/i.test(trimmed)) continue;
+    if (trimmed.length > 120) continue;
+    if (/^project\s*:/i.test(trimmed)) return trimmed.replace(/\s+/g, " ");
+    if (
+      /(developer|engineer|architect|manager|consultant|analyst|lead|verizon|infosys|project)/i.test(trimmed) ||
+      /\b\d{4}\b/.test(trimmed) ||
+      /[A-Za-z]+,\s*[A-Z]{2}/.test(trimmed)
+    ) {
+      return trimmed.replace(/\s+/g, " ");
+    }
+  }
+  return "";
+}
+
+function attachExperienceTargets(lines, candidates) {
+  const experienceCandidates = candidates.filter((c) => c.type === "experience_bullet");
+  if (!experienceCandidates.length) {
+    return { candidates, experienceTargets: [] };
+  }
+
+  const targetMap = new Map();
+  const byLine = new Map();
+  let fallbackCounter = 1;
+  for (const candidate of experienceCandidates) {
+    const label = findExperienceTargetLabel(lines, candidate.lineNumber) || `Experience Segment ${fallbackCounter++}`;
+    const targetKey = slugifyToken(label) || `segment_${fallbackCounter}`;
+    let target = targetMap.get(targetKey);
+    if (!target) {
+      const labelSlug = slugifyToken(label) || `segment_${targetMap.size + 1}`;
+      target = {
+        id: `exp_${labelSlug}`,
+        label,
+        startLine: candidate.lineNumber,
+        endLine: candidate.lineNumber,
+        bulletCount: 0,
+      };
+      targetMap.set(targetKey, target);
+    }
+    target.startLine = Math.min(target.startLine, candidate.lineNumber);
+    target.endLine = Math.max(target.endLine, candidate.lineNumber);
+    target.bulletCount += 1;
+    byLine.set(candidate.lineNumber, target);
+  }
+
+  const enrichedCandidates = candidates.map((c) => {
+    if (c.type !== "experience_bullet") return c;
+    const target = byLine.get(c.lineNumber);
+    if (!target) return c;
+    return {
+      ...c,
+      experienceTargetId: target.id,
+      experienceTargetLabel: target.label,
+    };
+  });
+
+  const experienceTargets = [...targetMap.values()]
+    .sort((a, b) => a.startLine - b.startLine)
+    .map((target) => ({
+      id: target.id,
+      label: target.label,
+      startLine: target.startLine,
+      endLine: target.endLine,
+      bulletCount: target.bulletCount,
+    }));
+
+  return { candidates: enrichedCandidates, experienceTargets };
+}
+
 function buildEditableLineCandidates(resumeText) {
   const lines = String(resumeText || "").replace(/\r/g, "").split("\n");
-  const candidates = [];
+  let candidates = [];
   let currentSection = null;
   let summaryCount = 0;
   let skillsCount = 0;
@@ -209,7 +294,9 @@ function buildEditableLineCandidates(resumeText) {
     }
   });
 
-  return { lines, candidates };
+  const withTargets = attachExperienceTargets(lines, candidates);
+  candidates = withTargets.candidates;
+  return { lines, candidates, experienceTargets: withTargets.experienceTargets };
 }
 
 function applyLineEditsPreservingLayout(lines, candidates, edits) {
@@ -459,7 +546,7 @@ function classifyMissingKeyword(keyword) {
   return "generic";
 }
 
-function buildKeywordGroups(rawKeywords) {
+function buildKeywordGroups(rawKeywords, explicitKeywordSet = new Set()) {
   const normalized = [...new Set((rawKeywords || []).map(normalizeKeywordPhrase).filter(Boolean))];
   const lowerSet = new Set(normalized.map((k) => k.toLowerCase()));
   const used = new Set();
@@ -514,6 +601,7 @@ function buildKeywordGroups(rawKeywords) {
       groups.push({
         keyword: g.label,
         sourceKeywords: normalized.filter((k) => g.needsAll.includes(k.toLowerCase())),
+        isExplicit: normalized.some((k) => g.needsAll.includes(k.toLowerCase()) && explicitKeywordSet.has(k.toLowerCase())),
       });
     }
   }
@@ -551,12 +639,13 @@ function buildKeywordGroups(rawKeywords) {
     groups.push({
       keyword: g.label,
       sourceKeywords: normalized.filter((k) => present.includes(k.toLowerCase())),
+      isExplicit: normalized.some((k) => present.includes(k.toLowerCase()) && explicitKeywordSet.has(k.toLowerCase())),
     });
   }
 
   for (const keyword of normalized) {
     if (used.has(keyword)) continue;
-    groups.push({ keyword, sourceKeywords: [keyword] });
+    groups.push({ keyword, sourceKeywords: [keyword], isExplicit: explicitKeywordSet.has(keyword.toLowerCase()) });
   }
   return groups;
 }
@@ -673,18 +762,29 @@ function buildExperienceInsertText(keyword) {
   }
   if (!hasTechnicalSignal(lower)) return null;
   if (lower.split(/\s+/).length === 1 && !STRONG_SINGLE_GENERATOR_KEYWORDS.has(lower)) return null;
-  return `- Strengthened distributed service reliability and delivery quality by applying ${k} in production engineering workflows and operational support improvements.`;
+  return `- Implemented ${k} improvements across distributed service workflows and production support systems, increasing reliability and delivery quality for enterprise-critical releases.`;
 }
 
 function generateSupplementalPointProposals({ analysis, resumeText, maxProposals = 24, options = {} }) {
-  const missingKeywords = (analysis?.insights?.topMissingKeywords || []).slice(0, 30);
+  const explicitMissingKeywords = Array.isArray(options.explicitMissingKeywords)
+    ? options.explicitMissingKeywords.map((k) => normalizeKeywordPhrase(k)).filter(Boolean)
+    : [];
+  const missingKeywords = [...new Set([...explicitMissingKeywords, ...(analysis?.insights?.topMissingKeywords || []).slice(0, 40)])];
   if (!missingKeywords.length) return [];
   const rolePreset = options.rolePreset || analysis?.metadata?.analysisOptions?.rolePreset || "general";
+  const preferredExperienceTargetId = String(options.preferredExperienceTargetId || "").trim();
+  const explicitKeywordSet = new Set(explicitMissingKeywords.map((k) => k.toLowerCase()));
 
   const { candidates } = buildEditableLineCandidates(resumeText);
   const overallYears = detectOverallExperienceYears(resumeText);
   const summaryCandidates = candidates.filter((c) => c.type === "summary_line");
-  const experienceAnchors = candidates.filter((c) => c.type === "experience_bullet" && !isLegacyGeneratedArtifactLine(c.originalText));
+  let experienceAnchors = candidates.filter((c) => c.type === "experience_bullet" && !isLegacyGeneratedArtifactLine(c.originalText));
+  if (preferredExperienceTargetId) {
+    const targeted = experienceAnchors.filter((c) => c.experienceTargetId === preferredExperienceTargetId);
+    if (targeted.length) {
+      experienceAnchors = targeted;
+    }
+  }
   const existingCanonicalLines = new Set(
     String(resumeText || "")
       .split(/\r?\n/)
@@ -697,34 +797,40 @@ function generateSupplementalPointProposals({ analysis, resumeText, maxProposals
 
   if (!summaryCandidates.length && !experienceAnchors.length) return [];
 
-  const groups = buildKeywordGroups(missingKeywords);
+  const groups = buildKeywordGroups(missingKeywords, explicitKeywordSet);
   const proposals = [];
   const proposedInsertCanonicals = new Set();
   const usedSummaryLines = new Set();
   let summaryCursor = 0;
   let experienceCursor = 0;
+  let explicitSummaryEdits = 0;
 
   for (const group of groups) {
     if (proposals.length >= maxProposals) break;
     const keyword = group.keyword;
-    if (isLowSignalKeywordForGenerator(keyword)) continue;
+    const explicitRequested = Boolean(group.isExplicit);
+    if (!explicitRequested && isLowSignalKeywordForGenerator(keyword)) continue;
     const category = classifyMissingKeyword(keyword);
     if (category === "skip" || category === "qualification") continue;
 
     const sourceKeywords = group.sourceKeywords || [keyword];
-    if (category === "summary" && summaryCandidates.length) {
+    const shouldForceSummaryForExplicit = explicitRequested && summaryCandidates.length && explicitSummaryEdits < Math.min(3, summaryCandidates.length);
+    if ((category === "summary" || shouldForceSummaryForExplicit) && summaryCandidates.length) {
       let anchor = summaryCandidates.find((c) => !usedSummaryLines.has(c.lineNumber));
       if (!anchor) {
         anchor = summaryCandidates[summaryCursor % summaryCandidates.length];
       }
       summaryCursor += 1;
       usedSummaryLines.add(anchor.lineNumber);
+      explicitSummaryEdits += explicitRequested ? 1 : 0;
       proposals.push({
         operation: "replace_line",
         lineNumber: anchor.lineNumber,
         type: "summary_line",
         targetArea: "Professional Summary",
-        reason: `Add explicit senior-level evidence for missing keyword(s): ${sourceKeywords.join(", ")}`,
+        reason: explicitRequested
+          ? `User-requested explicit keyword injection in summary: ${sourceKeywords.join(", ")}`
+          : `Add explicit senior-level evidence for missing keyword(s): ${sourceKeywords.join(", ")}`,
         before: anchor.originalText,
         after: normalizeSummaryYearsText(buildSummaryProposalText(keyword), overallYears),
         addedKeywords: sourceKeywords,
@@ -754,7 +860,9 @@ function generateSupplementalPointProposals({ analysis, resumeText, maxProposals
         lineNumber: anchor.lineNumber,
         type: "experience_bullet_insert",
         targetArea: "Experience",
-        reason: `New experience bullet to cover missing keyword(s): ${sourceKeywords.join(", ")}`,
+        reason: explicitRequested
+          ? `User-requested explicit keyword experience point: ${sourceKeywords.join(", ")}`
+          : `New experience bullet to cover missing keyword(s): ${sourceKeywords.join(", ")}`,
         before: `(Insert new bullet after line ${anchor.lineNumber})`,
         after: afterText,
         addedKeywords: sourceKeywords,
@@ -798,11 +906,19 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const missingKeywords = (analysis?.insights?.topMissingKeywords || []).slice(0, 20);
+  const explicitKeywords = Array.isArray(options.explicitMissingKeywords)
+    ? options.explicitMissingKeywords.map((k) => normalizeKeywordPhrase(k)).filter(Boolean)
+    : [];
   const topMatchedKeywords = (analysis?.insights?.topMatchedKeywords || []).slice(0, 20);
   const { lines, candidates } = buildEditableLineCandidates(resumeText);
   const overallYears = detectOverallExperienceYears(resumeText);
   const legacyArtifactCount = countLegacyGeneratedArtifactLines(resumeText);
   const rolePreset = options.rolePreset || analysis?.metadata?.analysisOptions?.rolePreset || "general";
+  const preferredExperienceTargetId = String(options.preferredExperienceTargetId || "").trim();
+  const preferredExperienceTargetLabel =
+    preferredExperienceTargetId
+      ? (candidates.find((c) => c.experienceTargetId === preferredExperienceTargetId)?.experienceTargetLabel || "")
+      : "";
 
   if (!candidates.length) {
     return {
@@ -821,6 +937,7 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     lineNumber: c.lineNumber,
     type: c.type,
     section: c.section,
+    ...(c.experienceTargetLabel ? { experienceTarget: c.experienceTargetLabel } : {}),
     priority:
       c.type === "summary_line" ? "high" :
       c.type === "experience_bullet" ? "high" :
@@ -842,6 +959,12 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
     "- Only improve wording, keyword alignment, and bullet impact in provided lines.",
     "- Preserve bullet prefixes (`-`, `*`, `•`) and avoid multi-line outputs.",
     "- Include job-description keywords only when they can be reasonably supported by the existing resume.",
+    ...(explicitKeywords.length
+      ? [`- The user explicitly requested these keywords to prioritize where truthful: ${explicitKeywords.join(", ")}.`]
+      : []),
+    ...(preferredExperienceTargetLabel
+      ? [`- Prefer editing experience lines under this selected resume segment: ${preferredExperienceTargetLabel}.`]
+      : []),
     "- Keep each rewritten line concise and readable.",
     "- Do NOT start experience bullets with weak filler verbs like 'Applied'. Use action + context + impact wording (e.g., improved/reduced/implemented/diagnosed/optimized/guided).",
     "- For experience bullets, prefer action + scope/system + tech/context + measurable impact (percent, volume, latency, reliability, MTTR, throughput) when supported by the resume context.",
@@ -1006,9 +1129,15 @@ async function generateOptimizedResumeDraft({ jobDescription, resumeText, analys
   };
 }
 
+function extractExperienceTargets(resumeText) {
+  const { experienceTargets } = buildEditableLineCandidates(resumeText || "");
+  return experienceTargets || [];
+}
+
 module.exports = {
   generateOptimizedResumeDraft,
   buildEditableLineCandidates,
   applyLineEditsPreservingLayout,
   generateSupplementalPointProposals,
+  extractExperienceTargets,
 };

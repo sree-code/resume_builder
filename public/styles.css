@@ -103,6 +103,10 @@ textarea {
   min-height: 220px;
 }
 
+#explicitMissingKeywords {
+  min-height: 120px;
+}
+
 input[type="file"] {
   padding: 10px;
 }
@@ -150,6 +154,24 @@ input[type="file"] {
   padding: 8px 10px;
   background: #fff;
   font: inherit;
+}
+
+.keyword-boost-grid select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  font: inherit;
+}
+
+#experienceTargetHint[data-type="success"] {
+  color: var(--success);
+}
+
+#experienceTargetHint[data-type="error"] {
+  color: var(--error);
 }
 
 .actions {

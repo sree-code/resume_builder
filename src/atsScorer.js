@@ -14,6 +14,7 @@ const COMMON_SKILLS = [
   "aws", "azure", "gcp", "docker", "kubernetes", "terraform", "graphql", "rest", "rest api", "microservices", "ci/cd",
   "git", "github", "gitlab", "jira", "figma", "agile", "scrum", "data analysis", "machine learning", "ai", "openai",
   "llm", "nlp", "excel", "power bi", "tableau", "salesforce", "sap", "testing", "jest", "playwright", "cypress",
+  "spring boot", "ios", "android", "reactjs", "cicd", "infra", "jenkins", "xcode", "fastlane", "gradle", "maven",
 ];
 
 const SECTION_HEADERS = [
@@ -44,6 +45,17 @@ const LOW_SIGNAL_SINGLE_TOKENS = new Set([
   "basic", "qualifications", "qualification", "deeply", "understand", "different", "such", "verbal",
   "continuously", "innovate", "self-serving", "steps", "step", "compilation", "fix",
 ]);
+
+const SHORT_TECH_KEYWORDS = new Set([
+  "ai", "go", "c#", "bs", "ms", "ios", "api", "sql", "aws", "gcp", "ui", "ux",
+]);
+
+const ADDITIONAL_TECH_TERMS = [
+  "spring boot", "spring", "hibernate", "j2ee", "servlets", "kafka", "apache kafka", "apache flink", "flink",
+  "redis", "graphql", "rest api", "microservices", "docker", "kubernetes", "terraform", "jenkins", "github actions",
+  "gitlab ci", "azure devops", "xcode", "fastlane", "bitrise", "firebase", "app center", "appcenter",
+  "ios", "android", "reactjs", "react native", "cicd", "ci/cd", "infra", "infrastructure", "release tooling",
+];
 
 const KEYWORD_ALIASES = new Map([
   ["go", ["go", "golang"]],
@@ -137,6 +149,24 @@ function unique(arr) {
   return [...new Set(arr)];
 }
 
+function extractTechnologyKeywords(jobDescription) {
+  const lower = normalizeText(jobDescription).toLowerCase();
+  const terms = unique([...COMMON_SKILLS, ...ADDITIONAL_TECH_TERMS]).map((t) => t.toLowerCase());
+  const found = [];
+  for (const term of terms) {
+    const normalized = normalizeKeyword(term);
+    if (!normalized) continue;
+    if (normalized.includes(" ")) {
+      const pattern = new RegExp(`\\b${escapeRegex(normalized).replace(/\\ /g, "\\s+")}\\b`, "i");
+      if (pattern.test(lower)) found.push(term);
+      continue;
+    }
+    const pattern = new RegExp(`\\b${escapeRegex(normalized)}\\b`, "i");
+    if (pattern.test(lower)) found.push(term);
+  }
+  return dedupeKeywordsForDisplay(found);
+}
+
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -213,6 +243,7 @@ function extractPhrases(jobDescription) {
 function normalizeJobKeywords(keywords, jobDescription, options = {}) {
   const text = normalizeKeyword(jobDescription);
   const rolePreset = options.rolePreset || "general";
+  const preserveKeywordSet = new Set((options.preserveKeywords || []).map((k) => normalizeKeyword(k)));
   const norms = new Set(keywords.map((k) => normalizeKeyword(k)));
   const items = [...keywords];
 
@@ -287,8 +318,9 @@ function normalizeJobKeywords(keywords, jobDescription, options = {}) {
   for (const keyword of items) {
     const normalized = normalizeKeyword(keyword);
     if (!normalized) continue;
-    if (removeNoisy.has(normalized)) continue;
-    if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) continue;
+    if (removeNoisy.has(normalized) && !preserveKeywordSet.has(normalized)) continue;
+    if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized) && !preserveKeywordSet.has(normalized)) continue;
+    if (normalized.length <= 3 && !SHORT_TECH_KEYWORDS.has(normalized) && !preserveKeywordSet.has(normalized)) continue;
     const key = getAlternativeGroupKey(normalized) || normalized;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -316,6 +348,7 @@ function detectKeywordListMode(jobDescription) {
 
 function extractKeywordsFromKeywordListText(jobDescription, options = {}) {
   const rolePreset = options.rolePreset || "general";
+  const preserveKeywordSet = new Set((options.preserveKeywords || []).map((k) => normalizeKeyword(k)));
   const chunks = normalizeText(jobDescription)
     .split("\n")
     .flatMap((line) => line.split(/[,;]+/))
@@ -328,11 +361,11 @@ function extractKeywordsFromKeywordListText(jobDescription, options = {}) {
     .filter((s) => {
       const normalized = normalizeKeyword(s);
       if (!normalized) return false;
-      if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) return false;
+      if (LOW_SIGNAL_SINGLE_TOKENS.has(normalized) && !preserveKeywordSet.has(normalized)) return false;
       if (rolePreset === "mobile_release" && /^(basic|qualifications?|degree|masters?|electrical|computer engineering|electrical engineering)$/.test(normalized)) {
         return false;
       }
-      if (normalized.split(/\s+/).length === 1 && normalized.length <= 3 && !["ai", "go", "c#", "bs", "ms"].includes(normalized)) {
+      if (normalized.split(/\s+/).length === 1 && normalized.length <= 3 && !SHORT_TECH_KEYWORDS.has(normalized) && !preserveKeywordSet.has(normalized)) {
         return false;
       }
       return true;
@@ -735,12 +768,21 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
   const normalizedResume = normalizeText(resumeText);
   const requestedMode = options.jdInputMode || "auto";
   const rolePreset = options.rolePreset || "general";
+  const explicitKeywords = Array.isArray(options.explicitMissingKeywords)
+    ? options.explicitMissingKeywords.map((k) => normalizeKeyword(k)).filter(Boolean)
+    : [];
   const keywordListDetected = requestedMode === "keyword_list" || (requestedMode === "auto" && detectKeywordListMode(normalizedJD));
   const advancedAtsMode = options.advancedAtsMode !== false;
   const aggressivePersonalMode = Boolean(options.aggressivePersonalMode);
 
-  const rawJdKeywords = keywordListDetected ? extractKeywordsFromKeywordListText(normalizedJD, { rolePreset }) : extractPhrases(normalizedJD);
-  const jdKeywords = advancedAtsMode ? normalizeJobKeywords(rawJdKeywords, normalizedJD, { rolePreset }) : rawJdKeywords;
+  const extractedTechnologies = extractTechnologyKeywords(normalizedJD);
+  const rawJdKeywords = keywordListDetected
+    ? extractKeywordsFromKeywordListText(normalizedJD, { rolePreset, preserveKeywords: explicitKeywords })
+    : extractPhrases(normalizedJD);
+  const combinedKeywords = unique([...rawJdKeywords, ...extractedTechnologies, ...explicitKeywords]);
+  const jdKeywords = advancedAtsMode
+    ? normalizeJobKeywords(combinedKeywords, normalizedJD, { rolePreset, preserveKeywords: explicitKeywords.concat(extractedTechnologies) })
+    : combinedKeywords;
   const jobTitles = extractLikelyJobTitles(normalizedJD);
 
   const keywordCoverage = scoreKeywordCoverage(jdKeywords, normalizedResume, { rolePreset });
@@ -771,12 +813,15 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
     "Needs improvement";
 
   const suggestions = buildSuggestions({ keywordCoverage, sections, formatting, roleAlignment, impact, keywordPlacement });
+  const missingKeywordSet = new Set((keywordCoverage.missingKeywords || []).map((k) => normalizeKeyword(k)));
+  const missingTechnologyKeywords = extractedTechnologies.filter((k) => missingKeywordSet.has(normalizeKeyword(k)));
+  const missingExplicitKeywords = explicitKeywords.filter((k) => missingKeywordSet.has(normalizeKeyword(k)));
 
   return {
     score,
     scoreBand,
     disclaimer:
-      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${advancedAtsMode ? " Advanced ATS mode is enabled (expanded keyword parsing/grouping)." : ""}${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}${rolePreset !== "general" ? ` ${rolePreset === "mobile_release" ? "Mobile Release / Release Engineering preset is enabled." : ""}` : ""}`,
+      `This is a simulated ATS match score (resume-vs-job alignment). Real ATS systems vary and recruiters still review relevance, truthfulness, and impact.${advancedAtsMode ? " Advanced ATS mode is enabled (expanded keyword parsing/grouping)." : ""}${aggressivePersonalMode ? " Aggressive personal mode is enabled (equivalence-friendly scoring)." : ""}${rolePreset !== "general" ? ` ${rolePreset === "mobile_release" ? "Mobile Release / Release Engineering preset is enabled." : ""}` : ""}${explicitKeywords.length ? " Explicit keyword boost is enabled." : ""}`,
     breakdown: {
       keywordCoverage: { max: 45, score: keywordCoverage.score },
       sections: { max: 15, score: sections.score },
@@ -791,6 +836,9 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
       matchedTitle: roleAlignment.matchedTitle,
       topMatchedKeywords: keywordCoverage.matchedKeywords.slice(0, advancedAtsMode ? 40 : 20),
       topMissingKeywords: keywordCoverage.missingKeywords.slice(0, advancedAtsMode ? 40 : 20),
+      topMissingTechnologies: missingTechnologyKeywords.slice(0, 20),
+      explicitKeywords,
+      missingExplicitKeywords: missingExplicitKeywords.slice(0, 30),
       presentSections: sections.presentSections,
       missingSections: sections.missingSections,
       formattingNotes: formatting.risks,
@@ -804,7 +852,17 @@ function analyzeResumeAgainstJob({ jobDescription, resumeText, metadata = {}, op
       aggressiveMatchedConcepts: aggressiveBonus.matchedConcepts,
     },
     suggestions,
-    metadata: { ...metadata, analysisOptions: { requestedMode, keywordListDetected, rolePreset, advancedAtsMode, aggressivePersonalMode } },
+    metadata: {
+      ...metadata,
+      analysisOptions: {
+        requestedMode,
+        keywordListDetected,
+        rolePreset,
+        advancedAtsMode,
+        aggressivePersonalMode,
+        explicitMissingKeywords: explicitKeywords,
+      },
+    },
   };
 }
 

@@ -96,6 +96,27 @@
               </span>
             </label>
           </div>
+          <div class="grid two compact-grid keyword-boost-grid">
+            <div class="field">
+              <label for="explicitMissingKeywords">Explicit Missing Keywords (Optional)</label>
+              <textarea
+                id="explicitMissingKeywords"
+                name="explicitMissingKeywords"
+                placeholder="Add keywords/technologies you explicitly want covered (comma or newline separated)..."
+              ></textarea>
+              <p class="hint">These keywords are prioritized in missing-keyword analysis and proposal generation (summary + experience).</p>
+            </div>
+            <div class="field">
+              <div class="field-head">
+                <label for="experienceTargetId">Target Professional Experience (Optional)</label>
+                <button type="button" id="refreshExperienceTargetsBtn" class="secondary small">Refresh from Resume</button>
+              </div>
+              <select id="experienceTargetId" name="experienceTargetId">
+                <option value="auto">Auto-detect best experience block</option>
+              </select>
+              <p class="hint" id="experienceTargetHint">Paste/upload resume content to detect experience blocks for targeted point insertion.</p>
+            </div>
+          </div>
           <div id="loaderCard" class="loader-card" hidden>
             <div class="loader-top">
               <div class="spinner-orb" aria-hidden="true"></div>
