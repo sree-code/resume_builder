@@ -422,6 +422,7 @@ const STRONG_SINGLE_GENERATOR_KEYWORDS = new Set([
   "java", "go", "golang", "c#", "aws", "azure", "gcp", "terraform", "kafka", "redis", "sql",
   "latency", "reliability", "correctness", "mentoring", "architecture", "observability", "livesite",
   "indexing", "ttl", "consistency", "performance", "cloud", "ios", "android", "reactjs", "cicd", "infra",
+  "scala", "c", "c++", "buildkite", "sqs", "rabbitmq", "etl", "argocd", "iac", "eks",
 ]);
 
 function normalizeLineForDedupe(text) {
@@ -472,7 +473,7 @@ function isLowSignalKeywordForGenerator(keyword) {
 
 function hasTechnicalSignal(keyword) {
   const lower = normalizeKeywordPhrase(keyword).toLowerCase();
-  return /(api|service|cloud|distributed|latency|reliability|pipeline|stream|schema|serialization|index|query|cache|ttl|consistency|terraform|kafka|redis|java|go|c#|architecture|operational|performance|monitor|observability|release|mobile|ios|android|reactjs|cicd|ci\/cd|infra|compilation|deploy)/.test(lower);
+  return /(api|service|cloud|distributed|latency|reliability|pipeline|stream|schema|serialization|index|query|cache|ttl|consistency|terraform|kafka|sqs|rabbitmq|redis|java|scala|go|c#|c\+\+|buildkite|etl|argocd|iac|architecture|operational|performance|monitor|observability|release|mobile|ios|android|reactjs|cicd|ci\/cd|infra|compilation|deploy|eks|kubernetes|messaging)/.test(lower);
 }
 
 function generatedBulletHasMetric(text) {
@@ -687,6 +688,24 @@ function buildExperienceInsertText(keyword) {
   }
   if (/mobile ci\/cd compilation and deployment|cicd|ci\/cd|compilation steps|deploying|infra/.test(lower)) {
     return `- Automated CI/CD compilation and deployment steps for mobile/web release pipelines using release tooling and infrastructure checks, cutting manual release effort by 50% and reducing deployment turnaround time by 40%.`;
+  }
+  if (/buildkite/.test(lower)) {
+    return `- Implemented Buildkite-based CI/CD workflows with gated build/test/release stages for distributed services, improving deployment safety by 30% and reducing release turnaround time by 35%.`;
+  }
+  if (/argocd|iac/.test(lower)) {
+    return `- Standardized DevOps infrastructure delivery using IaC and ArgoCD-style GitOps workflows, improving deployment consistency by 30% and reducing configuration drift incidents by 25%.`;
+  }
+  if (/sqs|rabbitmq|kafka|asynchronous communication patterns/.test(lower)) {
+    return `- Implemented asynchronous messaging patterns using Kafka/SQS/RabbitMQ-style event flows to improve system decoupling, increase throughput, and reduce peak-load processing latency by 25%.`;
+  }
+  if (/etl|query optimizations?|sql queries/.test(lower)) {
+    return `- Built ETL and query-optimization improvements for relational and non-relational data flows, reducing query latency by 30% and improving batch processing throughput by 25%.`;
+  }
+  if (/scala|c\+\+|\bc\b/.test(lower)) {
+    return `- Contributed to polyglot backend engineering across Java/Scala and performance-sensitive modules, improving distributed service reliability by 20% and accelerating delivery of production features by 15%.`;
+  }
+  if (/mms\/sms\/rcs|messaging protocols/.test(lower)) {
+    return `- Enhanced messaging platform integrations aligned with MMS/SMS/RCS-style protocol workflows, improving delivery reliability by 20% and reducing message-processing errors by 18%.`;
   }
   if (/ios android reactjs release workflows|ios|android|reactjs/.test(lower)) {
     return `- Improved cross-platform iOS/Android release workflows for ReactJS-based features by standardizing build validation and rollout coordination, reducing platform-specific release defects by 30% and improving release consistency.`;

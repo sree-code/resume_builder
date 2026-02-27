@@ -6,6 +6,8 @@ const STOPWORDS = new Set([
   "work", "working", "role", "team", "teams", "candidate", "job", "position", "responsibilities", "requirements",
   "including", "knowledge", "understanding", "support", "develop", "development", "design", "build", "building",
   "based", "related", "ability", "preferred", "required", "etc",
+  "career", "learning", "focus", "closely", "gather", "translate", "effective", "take", "ownership", "opportunities",
+  "enhance", "participate", "refinement", "ticket", "traditional", "path", "values", "diverse", "commitment",
 ]);
 
 const COMMON_SKILLS = [
@@ -15,6 +17,7 @@ const COMMON_SKILLS = [
   "git", "github", "gitlab", "jira", "figma", "agile", "scrum", "data analysis", "machine learning", "ai", "openai",
   "llm", "nlp", "excel", "power bi", "tableau", "salesforce", "sap", "testing", "jest", "playwright", "cypress",
   "spring boot", "ios", "android", "reactjs", "cicd", "infra", "jenkins", "xcode", "fastlane", "gradle", "maven",
+  "scala", "c", "buildkite", "sqs", "rabbitmq", "etl", "argocd", "eks", "on-call", "automation",
 ];
 
 const SECTION_HEADERS = [
@@ -47,7 +50,7 @@ const LOW_SIGNAL_SINGLE_TOKENS = new Set([
 ]);
 
 const SHORT_TECH_KEYWORDS = new Set([
-  "ai", "go", "c#", "bs", "ms", "ios", "api", "sql", "aws", "gcp", "ui", "ux",
+  "ai", "go", "c", "c#", "bs", "ms", "ios", "api", "sql", "aws", "gcp", "ui", "ux",
 ]);
 
 const ADDITIONAL_TECH_TERMS = [
@@ -55,6 +58,23 @@ const ADDITIONAL_TECH_TERMS = [
   "redis", "graphql", "rest api", "microservices", "docker", "kubernetes", "terraform", "jenkins", "github actions",
   "gitlab ci", "azure devops", "xcode", "fastlane", "bitrise", "firebase", "app center", "appcenter",
   "ios", "android", "reactjs", "react native", "cicd", "ci/cd", "infra", "infrastructure", "release tooling",
+  "scala", "c++", "buildkite", "sqs", "rabbitmq", "etl", "argocd", "iac", "on-call", "kubernetes/eks",
+  "mms/sms/rcs", "asynchronous programming", "multi-threading", "concurrent systems", "distributed systems",
+  "testing automation", "query optimization", "production debugging",
+];
+
+const DISPLAY_KEEP_SINGLE_KEYWORDS = new Set([
+  "java", "scala", "c", "c++", "c#", "python", "go", "golang", "aws", "gcp", "azure", "sql", "etl", "docker",
+  "kubernetes", "eks", "terraform", "argocd", "buildkite", "kafka", "sqs", "rabbitmq", "redis", "graphql",
+  "microservices", "testing", "automation", "agile", "devops", "iac", "on-call", "reactjs", "ios", "android",
+  "spring", "spring boot", "jenkins", "ci/cd", "cicd", "infra",
+]);
+
+const TECH_SIGNAL_TERMS = [
+  "java", "scala", "c++", "c#", "aws", "azure", "gcp", "kubernetes", "eks", "docker", "terraform", "argocd",
+  "kafka", "sqs", "rabbitmq", "sql", "etl", "ci/cd", "cicd", "infra", "microservices", "distributed", "concurrent",
+  "asynchronous", "multi-threading", "testing", "automation", "on-call", "messaging", "protocol", "query", "optimization",
+  "buildkite", "release", "devops", "iac", "spring", "reactjs", "ios", "android", "database", "debugging",
 ];
 
 const KEYWORD_ALIASES = new Map([
@@ -154,21 +174,43 @@ function extractTechnologyKeywords(jobDescription) {
   const terms = unique([...COMMON_SKILLS, ...ADDITIONAL_TECH_TERMS]).map((t) => t.toLowerCase());
   const found = [];
   for (const term of terms) {
-    const normalized = normalizeKeyword(term);
-    if (!normalized) continue;
-    if (normalized.includes(" ")) {
-      const pattern = new RegExp(`\\b${escapeRegex(normalized).replace(/\\ /g, "\\s+")}\\b`, "i");
-      if (pattern.test(lower)) found.push(term);
-      continue;
-    }
-    const pattern = new RegExp(`\\b${escapeRegex(normalized)}\\b`, "i");
-    if (pattern.test(lower)) found.push(term);
+    if (termExistsInText(lower, term)) found.push(term);
   }
+  if (termExistsInText(lower, "kubernetes") && termExistsInText(lower, "eks")) found.push("kubernetes/eks");
+  if (termExistsInText(lower, "mms") && termExistsInText(lower, "sms") && termExistsInText(lower, "rcs")) found.push("mms/sms/rcs");
+  if (termExistsInText(lower, "asynchronous programming") || termExistsInText(lower, "multi-threading")) {
+    found.push("asynchronous programming");
+    found.push("multi-threading");
+  }
+  if (termExistsInText(lower, "distributed") && termExistsInText(lower, "concurrent")) found.push("distributed and concurrent systems");
   return dedupeKeywordsForDisplay(found);
 }
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildLooseTermRegex(term) {
+  const normalized = normalizeKeyword(term);
+  if (!normalized) return null;
+  const pattern = escapeRegex(normalized)
+    .replace(/\\\//g, "\\s*[\\/\\\\]\\s*")
+    .replace(/\\ /g, "\\s+");
+  return new RegExp(`(^|[^a-z0-9])${pattern}(?=$|[^a-z0-9])`, "i");
+}
+
+function termExistsInText(text, term) {
+  const regex = buildLooseTermRegex(term);
+  if (!regex) return false;
+  return regex.test(String(text || "").toLowerCase());
+}
+
+function isLikelyTechnicalKeyword(keyword) {
+  const normalized = normalizeKeyword(keyword);
+  if (!normalized) return false;
+  if (DISPLAY_KEEP_SINGLE_KEYWORDS.has(normalized)) return true;
+  if (COMMON_SKILLS.includes(normalized)) return true;
+  return TECH_SIGNAL_TERMS.some((term) => termExistsInText(normalized, term));
 }
 
 function countRegex(text, pattern) {
@@ -182,7 +224,10 @@ function extractPhrases(jobDescription) {
   const phrases = new Set();
 
   for (const skill of COMMON_SKILLS) {
-    if (lower.includes(skill.toLowerCase())) phrases.add(skill.toLowerCase());
+    if (termExistsInText(lower, skill)) phrases.add(skill.toLowerCase());
+  }
+  for (const tech of ADDITIONAL_TECH_TERMS) {
+    if (termExistsInText(lower, tech)) phrases.add(tech.toLowerCase());
   }
 
   const acronymMatches = text.match(/\b[A-Z][A-Z0-9]{1,}\b/g) || [];
@@ -226,11 +271,13 @@ function extractPhrases(jobDescription) {
     .filter((p) => p.length >= 2)
     .filter((p) => !STOPWORDS.has(p))
     .filter((p) => p !== "and" && p !== "or")
+    .filter((p) => !/\b(like|including|etc|such as)\b/.test(p) || isLikelyTechnicalKeyword(p))
     .filter((p) => !/[.,;:]$/.test(p))
     .filter((p) => !/[.;:]\s/.test(p) || COMMON_SKILLS.includes(p))
     .filter((p) => !/\b(with|and|or|for|to)\b/.test(p) || COMMON_SKILLS.includes(p))
     .filter((p) => !LOW_SIGNAL_KEYWORDS.has(normalizeKeyword(p)))
     .filter((p) => !/^\w+\.$/.test(p))
+    .filter((p) => !(p.split(/\s+/).length === 1 && !isLikelyTechnicalKeyword(p)))
     .filter((p) => {
       const tokens = p.split(/\s+/);
       const generic = tokens.filter((t) => STOPWORDS.has(t) || ["existing", "future", "one", "area", "involving", "field", "division"].includes(t)).length;
@@ -422,8 +469,10 @@ function scoreKeywordCoverage(jobKeywords, resumeText, options = {}) {
     if (COMMON_SKILLS.includes(keyword)) weight = 3;
     if (keyword.includes(" ") && keyword.split(" ").length >= 2) weight += 1;
     if (/^(aws|gcp|azure|sql|api|react|node|python|java|docker|kubernetes|terraform)$/.test(normalized)) weight += 1;
+    if (isLikelyTechnicalKeyword(normalized)) weight += 1;
     if (rolePreset === "mobile_release" && MOBILE_RELEASE_PRESET_KEYWORDS.has(normalized)) weight += 2;
     if (LOW_SIGNAL_KEYWORDS.has(normalized)) weight = 0;
+    if (!isLikelyTechnicalKeyword(normalized) && normalized.split(/\s+/).length <= 2) weight = Math.min(weight, 1);
     if (/^(basic qualifications|qualifications|basic)$/.test(normalized)) weight = 0;
     if (/(^degree$|^masters?$|computer engineering|electrical engineering)/.test(normalized)) weight = Math.min(weight, 1);
     if (/\b(division|field|one area|developers specify)\b/.test(normalized)) weight = Math.min(weight, 1);
@@ -489,14 +538,37 @@ function dedupeKeywordsForDisplay(keywords) {
   const out = [];
   const seen = new Set();
   for (const keyword of keywords) {
-    const normalized = normalizeKeyword(keyword);
+    const normalized = normalizeKeyword(sanitizeDisplayKeyword(keyword));
     if (!normalized || LOW_SIGNAL_SINGLE_TOKENS.has(normalized)) continue;
+    if (normalized.split(/\s+/).length === 1 && !DISPLAY_KEEP_SINGLE_KEYWORDS.has(normalized) && !isLikelyTechnicalKeyword(normalized)) {
+      continue;
+    }
+    if (/\b(like|including|etc|such as)\b/.test(normalized)) continue;
+    if (normalized.length <= 2 && !SHORT_TECH_KEYWORDS.has(normalized) && !DISPLAY_KEEP_SINGLE_KEYWORDS.has(normalized)) continue;
     const key = getAlternativeGroupKey(normalized) || normalized;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(keyword);
+    out.push(normalized);
   }
   return out;
+}
+
+function sanitizeDisplayKeyword(keyword) {
+  let value = normalizeKeyword(keyword);
+  if (!value) return "";
+  value = value
+    .replace(/^(concepts?|patterns?|pipelines?|frameworks?|tools?)\s+like\s+/i, "")
+    .replace(/^like\s+/i, "")
+    .replace(/^specifically\s+/i, "")
+    .replace(/^communication patterns\s+like\s+/i, "")
+    .replace(/^containerization frameworks\s+like\s+/i, "")
+    .replace(/^pipelines\s+like\s+/i, "")
+    .replace(/\s+tools?$/i, "");
+  if (value === "communication patterns") value = "asynchronous communication patterns";
+  if (value === "containerization frameworks") value = "containerization frameworks";
+  if (value === "implementing large scale") value = "large scale solutions";
+  if (value === "debugging large scale") value = "debugging large scale distributed systems";
+  return value.trim();
 }
 
 function scoreAggressivePersonalBonus({ resumeText, jobKeywords, jobTitles, impact, roleAlignment }) {

@@ -229,11 +229,12 @@ function renderAnalysis(analysis) {
   document.getElementById("disclaimerText").textContent = analysis.disclaimer;
   renderBreakdown(analysis.breakdown);
 
-  const missingKeywords = uniqueStrings([
-    ...(analysis?.insights?.topMissingTechnologies || []),
-    ...(analysis?.insights?.topMissingKeywords || []),
-  ]);
-  renderChips("missingKeywords", missingKeywords, "No obvious missing keywords found.");
+  const missingTechKeywords = uniqueStrings(analysis?.insights?.topMissingTechnologies || []);
+  const missingTechSet = new Set(missingTechKeywords.map((k) => String(k || "").toLowerCase()));
+  const missingKeywords = uniqueStrings(analysis?.insights?.topMissingKeywords || [])
+    .filter((k) => !missingTechSet.has(String(k || "").toLowerCase()));
+  renderChips("missingTechKeywords", missingTechKeywords, "No technical skill gaps detected.");
+  renderChips("missingKeywords", missingKeywords, "No additional missing keywords found.");
   renderChips("matchedKeywords", analysis.insights.topMatchedKeywords, "No matched keywords detected yet.");
   renderList("suggestionsList", analysis.suggestions, "No suggestions generated.");
   renderList("formatNotes", analysis.insights.formattingNotes, "No formatting notes.");
